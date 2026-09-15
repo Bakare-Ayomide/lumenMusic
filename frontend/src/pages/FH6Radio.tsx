@@ -308,7 +308,7 @@ export default function FH6Radio() {
       </section>
 
       <section className="fh6-grid fh6-grid-single">
-        <div className="fh6-panel fh6-install">
+        <div className="fh6-panel">
           <div className="fh6-panel-head">
             <div>
               <h2>Install</h2>

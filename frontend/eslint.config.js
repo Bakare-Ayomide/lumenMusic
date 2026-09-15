@@ -2,12 +2,60 @@ import js from "@eslint/js";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 import reactHooks from "eslint-plugin-react-hooks";
+import { plugin as shadcn } from "@shadcn/lint";
 
 export default tseslint.config(
   { ignores: ["node_modules", "dist", "electron/build", "release"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   reactHooks.configs.flat["recommended-latest"],
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    plugins: { shadcn },
+    settings: {
+      shadcn: {
+        // Lumen imports its custom UI through relative component paths.
+        componentImports: ["^(?:\\./|(?:\\.\\./)+)components/"],
+        note: "See frontend/README.md#design-system-rules for Lumen's styling policy.",
+      },
+    },
+    rules: {
+      "shadcn/no-raw-colors": "error",
+      "shadcn/no-unknown-classes": "error",
+      "shadcn/no-arbitrary-values": ["error", { allow: ["layout"] }],
+      "shadcn/require-static-classes": "error",
+      "shadcn/no-restyle": [
+        "error",
+        {
+          allow: ["layout"],
+          // Existing CSS treatments are allowed only on their owning components.
+          contracts: [
+            { pattern: "^Button$", allow: ["layout", "artist-hero-back"] },
+            {
+              pattern: "^CoverArt$",
+              allow: ["layout", "card-art", "mini-art", "detail-art", "share-preview-art", "artist-hero-avatar"],
+            },
+            { pattern: "^WindowControls$", allow: ["layout", "root-window-controls"] },
+            { pattern: "^SearchInput$", allow: ["layout", "playlist-search"] },
+            { pattern: "^ListPageHeader$", allow: ["layout", "replay-hero"] },
+            { pattern: "^LoadingState$", allow: ["layout", "share-preview-status"] },
+            { pattern: "^Section$", allow: ["layout", "artist-section"] },
+          ],
+        },
+      ],
+      // Inline styles are an established part of Lumen's component API.
+      "shadcn/no-inline-styles": "off",
+    },
+  },
+  {
+    files: ["src/components/**/*.{ts,tsx}"],
+    rules: {
+      // Implementations own appearance and forward dynamic className props.
+      "shadcn/no-restyle": "off",
+      "shadcn/no-arbitrary-values": "off",
+      "shadcn/require-static-classes": "off",
+    },
+  },
   {
     files: ["**/*.{ts,tsx}"],
     languageOptions: {

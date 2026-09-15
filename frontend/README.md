@@ -62,6 +62,52 @@ npm run typecheck
 npm run build      # emits dist/
 ```
 
+### Lint
+
+Run `npm run lint` from `frontend/`, or `npm --prefix frontend run lint`
+from the repository root. CI runs the same command.
+
+[`eslint.config.js`](./eslint.config.js) registers `@shadcn/lint` for
+frontend source files alongside the existing ESLint rules. Relative imports
+into `src/components/` are configured for component recognition; the plugin
+automatically discovers the Tailwind theme in `src/index.css`.
+
+The plugin requires Node.js 20.19+ and ESLint 9.30+.
+
+#### Design-system rules
+
+The following checks run as errors through the existing lint command and CI:
+
+| Rule | Lumen policy |
+| --- | --- |
+| `no-raw-colors` | Use theme colors instead of Tailwind palette colors or literal SVG colors. |
+| `no-unknown-classes` | Classes must exist in Tailwind or the CSS imported by `src/index.css`. |
+| `no-restyle` | Consumers may place and size components with layout classes; appearance belongs in the component. |
+| `no-arbitrary-values` | Consumers use theme variables and scale values for appearance; arbitrary layout values are allowed. |
+| `require-static-classes` | Component consumers must provide classes the linter can read. |
+
+Use `Button`'s `variant` and `size` props for its appearance. Existing named
+CSS treatments (such as `card-art` on `CoverArt` and `playlist-search` on
+`SearchInput`) have explicit component contracts in `eslint.config.js`.
+Keep new exceptions specific to the component and an existing CSS class.
+
+Component implementations in `src/components/` are exempt from `no-restyle`,
+`no-arbitrary-values`, and `require-static-classes` so they can define their
+appearance and forward class props. Color and class-existence checks still
+apply there.
+
+Use CSS variable shorthand such as `text-(--fg-subtle)` for Lumen's theme
+variables. `no-inline-styles` remains off because inline styles, including
+dynamic dimensions and colors, are part of the existing component APIs.
+Inline styles and plain CSS declarations are therefore outside these checks;
+a passing lint run does not enforce every styling path.
+
+After UI changes, run lint and fix violations. Review new tokens, component
+contracts, and suppression comments as design decisions. See the
+[available rules](https://github.com/shadcn-ui/lint#rules) and
+[configuration examples](https://github.com/shadcn-ui/lint/blob/main/docs/design-systems.md)
+when updating the policy.
+
 ## Electron (desktop)
 
 ```sh

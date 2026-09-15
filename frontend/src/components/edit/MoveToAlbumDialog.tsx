@@ -152,7 +152,6 @@ export function MoveToAlbumDialog({
                 type="button"
                 onClick={() => void move(a)}
                 disabled={isCurrent || movingId !== null}
-                className="album-pick-row"
                 style={{
                   display: "flex",
                   alignItems: "center",

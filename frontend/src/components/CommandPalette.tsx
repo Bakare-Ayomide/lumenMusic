@@ -319,7 +319,7 @@ export default function CommandPalette({
           )}
 
           {albums.length > 0 && (
-            <Command.Group heading="Albums" className="cmdk-group">
+            <Command.Group heading="Albums">
               {albums.map((a) => (
                 <Command.Item
                   key={`album-${a.id}`}
@@ -356,7 +356,7 @@ export default function CommandPalette({
           )}
 
           {artists.length > 0 && (
-            <Command.Group heading="Artists" className="cmdk-group">
+            <Command.Group heading="Artists">
               {artists.map((a) => (
                 <Command.Item
                   key={`artist-${a.id}`}
@@ -397,7 +397,7 @@ export default function CommandPalette({
           )}
 
           {tracks.length > 0 && (
-            <Command.Group heading="Tracks" className="cmdk-group">
+            <Command.Group heading="Tracks">
               {tracks.map((t) => (
                 <Command.Item
                   key={`track-${t.id}`}
@@ -432,7 +432,7 @@ export default function CommandPalette({
           </Command.Item>}
 
           {(query.trim().length < 2 || searchType === "all") && <>
-          <Command.Group heading="Navigate" className="cmdk-group">
+          <Command.Group heading="Navigate">
             <NavItem icon={MusicalNoteIcon} label="Home" hint="/" onSelect={() => run(() => navigate("/"))} />
             <NavItem icon={QueueListIcon} label="Library" hint="/library" onSelect={() => run(() => navigate("/library"))} />
             <NavItem icon={HeartIcon} label="Favorites" hint="/favorites" onSelect={() => run(() => navigate("/favorites"))} />
@@ -457,7 +457,7 @@ export default function CommandPalette({
           </Command.Group>
 
           {playlists.length > 0 && (
-            <Command.Group heading="Playlists" className="cmdk-group">
+            <Command.Group heading="Playlists">
               {playlists.map((p) => (
                 <Command.Item
                   key={`pl-${p.id}`}
@@ -478,7 +478,7 @@ export default function CommandPalette({
             </Command.Group>
           )}
 
-          <Command.Group heading="Playback" className="cmdk-group">
+          <Command.Group heading="Playback">
             {playback.map((a) => (
               <Command.Item
                 key={a.id}
@@ -494,7 +494,7 @@ export default function CommandPalette({
             ))}
           </Command.Group>
 
-          <Command.Group heading="Actions" className="cmdk-group">
+          <Command.Group heading="Actions">
             {actions.map((a) => (
               <Command.Item
                 key={a.id}

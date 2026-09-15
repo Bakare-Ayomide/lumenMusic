@@ -2,6 +2,15 @@
 
 These instructions apply to all work under `frontend/`.
 
+## Lint
+
+After making changes, run `npm run lint` from `frontend/` and fix errors
+introduced by your changes. The existing command also loads `@shadcn/lint`;
+its design-system rules enforce theme colors, valid classes, and component
+contracts. Follow the policy in [README.md](./README.md#design-system-rules).
+Use component variants and sizes, theme variables, and scale values. Keep
+new contracts or suppressions narrow and explain why they are needed.
+
 ## Unsigned CI releases
 
 The GitHub Actions release workflow intentionally builds unsigned Windows and

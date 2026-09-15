@@ -93,7 +93,7 @@ export default function PlaybackDevicePopover({
             onClose();
           }}
         >
-          <span className="device-pop-icon local">
+          <span className="device-pop-icon">
             <WindowIcon aria-hidden="true" />
           </span>
           <span className="device-pop-copy">
