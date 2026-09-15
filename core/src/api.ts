@@ -284,7 +284,7 @@ export const api = {
     return { items, total: (params.offset ?? 0) + items.length, nextOffsets: result.next_offsets ?? {}, warnings: result.warnings };
   },
   getTidalArtist: (id: string, options: RequestOptions = {}) =>
-    request<{ albums: SearchAlbum[]; tracks: TrackListItem[]; warnings?: string[] }>(`/api/tidal/artists/${pathID(id)}`, options),
+    request<TidalArtist>(`/api/tidal/artists/${pathID(id)}`, options),
 
   listAlbumsPage: (params: PageParams = {}) =>
     fetchPage<Album>("/api/albums", params),
@@ -731,6 +731,14 @@ export interface TidalAuthorizationPollOptions {
   signal?: AbortSignal;
   intervalMs?: number;
   timeoutMs?: number;
+}
+
+export interface TidalArtist {
+  /** Absent when the profile lookup failed; the releases are still valid. */
+  artist?: { name: string; cover_url?: string };
+  albums: SearchAlbum[];
+  tracks: TrackListItem[];
+  warnings?: string[];
 }
 
 export interface TidalAlbum {

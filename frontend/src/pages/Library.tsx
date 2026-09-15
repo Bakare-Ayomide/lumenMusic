@@ -31,11 +31,14 @@ import {
   type PageRequest,
 } from "../lib/usePaginatedList";
 import { AlbumCard, ArtistCard } from "./library/EntityCards";
-import SearchResults, { TidalArtistResults } from "./library/SearchResults";
+import SearchResults from "./library/SearchResults";
 import GridView from "./library/GridView";
 import {
-  AlbumDetailView,
   ArtistDetailView,
+  TidalArtistDetailView,
+} from "./library/ArtistDetail";
+import {
+  AlbumDetailView,
   TidalAlbumDetailView,
 } from "./library/LibraryDetail";
 
@@ -120,10 +123,10 @@ export default function Library() {
     );
   }
   if (tidalArtistID) {
-    return <TidalArtistResults key={tidalArtistID} id={tidalArtistID} name={params.get("artistName") ?? "TIDAL artist"} onBack={clearDrill} onOpenAlbum={openAlbum} />;
+    return <TidalArtistDetailView key={tidalArtistID} id={tidalArtistID} name={params.get("artistName") ?? "TIDAL artist"} onBack={clearDrill} onOpenAlbum={openAlbum} />;
   }
   if (artistID) {
-    return <ArtistDetailView key={artistID} id={artistID} onBack={clearDrill} />;
+    return <ArtistDetailView key={artistID} id={artistID} onBack={clearDrill} onOpenAlbum={openAlbum} />;
   }
 
   return (

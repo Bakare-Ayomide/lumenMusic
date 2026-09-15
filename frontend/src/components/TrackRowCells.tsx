@@ -58,8 +58,6 @@ export function TrackIndexCell({
                   border: 0,
                   color: "var(--fg)",
                   cursor: "pointer",
-                  display: "inline-grid",
-                  placeItems: "center",
                 }}
               >
                 <PlayIcon className="size-3.5" />

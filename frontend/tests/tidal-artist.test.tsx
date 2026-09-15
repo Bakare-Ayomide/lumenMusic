@@ -6,7 +6,7 @@ import {
   screen,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { TidalArtistResults } from "../src/pages/library/SearchResults";
+import { TidalArtistDetailView } from "../src/pages/library/ArtistDetail";
 
 const mock = vi.hoisted(() => ({ artist: vi.fn() }));
 vi.mock("../../core/src/api", async (original) => ({
@@ -18,11 +18,20 @@ vi.mock("../src/components/TrackList", () => ({
     <div>{tracks.map((t) => t.title).join(", ")}</div>
   ),
 }));
-vi.mock("../src/pages/library/EntityCards", () => ({
-  AlbumCard: ({ album }: { album: { title: string } }) => (
-    <div>{album.title}</div>
-  ),
-  ArtistCard: () => null,
+vi.mock("../src/context/Player", () => ({
+  usePlayer: () => ({
+    play: vi.fn(),
+    toggle: vi.fn(),
+    toggleShuffle: vi.fn(),
+    current: null,
+    isPlaying: false,
+    shuffle: false,
+  }),
+  useRemotePlayback: () => ({
+    targetDevice: null,
+    controlledShuffle: false,
+    commandPending: false,
+  }),
 }));
 
 beforeEach(() => {
@@ -32,7 +41,7 @@ afterEach(cleanup);
 const empty = { albums: [], tracks: [] };
 const show = async () => {
   const view = render(
-    <TidalArtistResults
+    <TidalArtistDetailView
       id="123"
       name="Artist"
       onBack={() => {}}
@@ -115,6 +124,80 @@ it("does not label incomplete empty results as empty and disables an active retr
   });
   expect(screen.getByText("No releases found.")).toBeTruthy();
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("replaces the link name and cover fallback with the loaded profile", async () => {
+  const track = { id: "tidal:t1", title: "Hit", duration_ms: 1000, cover_url: "/track-cover.jpg" };
+  mock.artist
+    .mockResolvedValueOnce({ ...empty, tracks: [track] })
+    .mockResolvedValueOnce({
+      ...empty,
+      tracks: [track],
+      artist: { name: "Profile Name", cover_url: "/api/covers/remote?url=artist" },
+    });
+  const avatar = () =>
+    document.querySelector(".artist-hero-avatar img")?.getAttribute("src");
+  const heading = () => screen.getByRole("heading", { level: 1 }).textContent;
+
+  const first = await show();
+  expect(heading()).toBe("Artist");
+  expect(avatar()).toBe("/track-cover.jpg");
+  first.unmount();
+
+  await show();
+  expect(heading()).toBe("Profile Name");
+  expect(avatar()).toBe("/api/covers/remote?url=artist");
+});
+
+it("previews five popular tracks and files releases newest first by kind", async () => {
+  mock.artist.mockResolvedValueOnce({
+    tracks: Array.from({ length: 7 }, (_, i) => ({
+      id: `tidal:t${i + 1}`,
+      title: `Track ${i + 1}`,
+      duration_ms: 1000,
+    })),
+    albums: [
+      { id: "tidal:1", title: "Old album", release_year: 2020, track_count: 12, duration_ms: 45 * 60_000 },
+      { id: "tidal:2", title: "New single", release_year: 2024, track_count: 1, duration_ms: 3 * 60_000 },
+      { id: "tidal:3", title: "Long EP-sized", release_year: 2022, track_count: 5, duration_ms: 34 * 60_000 },
+      { id: "tidal:4", title: "Short EP", release_year: 2022, track_count: 5, duration_ms: 18 * 60_000 },
+    ],
+  });
+  const view = await show();
+  const cards = () =>
+    [...view.container.querySelectorAll(".card")].map(
+      (card) =>
+        `${card.querySelector(".card-title")?.textContent} | ${card.querySelector(".card-sub")?.textContent}`,
+    );
+  expect(screen.getByText("Track 1, Track 2, Track 3, Track 4, Track 5")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "See more" }));
+  expect(screen.getByText(/, Track 7$/)).toBeTruthy();
+  expect(cards()).toEqual([
+    "New single | 2024 · Single",
+    "Long EP-sized | 2022 · Album",
+    "Short EP | 2022 · EP",
+    "Old album | 2020 · Album",
+  ]);
+  fireEvent.click(screen.getByRole("button", { name: "Singles and EPs" }));
+  expect(cards()).toEqual(["New single | 2024 · Single", "Short EP | 2022 · EP"]);
+});
+
+it("drops a release filter that a retry makes unavailable", async () => {
+  const lp = { id: "tidal:1", title: "LP", release_year: 2020, track_count: 12, duration_ms: 45 * 60_000 };
+  const single = { id: "tidal:2", title: "Single", release_year: 2024, track_count: 1, duration_ms: 3 * 60_000 };
+  mock.artist
+    .mockResolvedValueOnce({ albums: [lp, single], tracks: [], warnings: ["Couldn't load top songs."] })
+    .mockResolvedValueOnce({ albums: [lp], tracks: [] });
+  const view = await show();
+  const titles = () =>
+    [...view.container.querySelectorAll(".card-title")].map((title) => title.textContent);
+  fireEvent.click(screen.getByRole("button", { name: "Singles and EPs" }));
+  expect(titles()).toEqual(["Single"]);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Retry artist" }));
+  });
+  expect(screen.queryByRole("button", { name: "Singles and EPs" })).toBeNull();
+  expect(titles()).toEqual(["LP"]);
 });
 
 it("aborts artist requests when leaving the screen", async () => {

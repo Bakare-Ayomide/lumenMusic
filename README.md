@@ -127,7 +127,9 @@ This is intentionally a passthrough setup:
   albums, singles/EPs, and 15 top songs. The proxy returns `failed_sections` for
   partial failures and HTTP 502 when all sections fail. The public
   `/api/tidal/artists/{id}` response includes user-facing `warnings` alongside
-  available albums and tracks; web, desktop, and mobile offer a retry.
+  available albums and tracks; web, desktop, and mobile offer a retry. The
+  artist's name and picture come from a fourth lookup that is optional: if it
+  fails, the response simply omits `artist` rather than adding a warning.
   Deploy the updated `hifi-api/lumen_hifi.py` extension and restart `hifi-api`
   when upgrading, including on independently hosted proxy deployments; the
   upstream service alone does not provide `/lumen/artist`.

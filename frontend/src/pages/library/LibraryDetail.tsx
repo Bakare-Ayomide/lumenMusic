@@ -8,9 +8,7 @@ import {
   api,
   albumCoverUrl,
   errorMessage,
-  trackCoverUrl,
   type Album,
-  type Artist,
   type TidalAlbum,
   type TrackListItem,
 } from "../../api";
@@ -286,98 +284,7 @@ export function TidalAlbumDetailView({
   );
 }
 
-export function ArtistDetailView({
-  id,
-  onBack,
-}: {
-  id: string;
-  onBack: () => void;
-}) {
-  const { entity: artist, tracks, error } = useEntityDetail<Artist>(id, {
-    get: api.getArtist,
-    listTracks: api.listArtistTracks,
-    label: "artist",
-  });
-  const { play } = usePlayer();
-  const search = useDetailTrackSearch("artist", tracks);
-
-  if (artist === "notfound") {
-    return <NotFound kind="Artist" onBack={onBack} />;
-  }
-  if (!artist || !tracks) {
-    return (
-      <div className="view">
-        <LoadingState label="Loading library…" />
-      </div>
-    );
-  }
-  const coverTrack = tracks[0];
-  return (
-    <div className="view" style={{ display: "grid", gap: 18 }}>
-      <DetailBackRow onBack={onBack} />
-      <ListPageHeader
-        kind="Artist"
-        title={displayText(artist.name)}
-        art={
-          <CoverArt
-            className="detail-art"
-            src={coverTrack ? trackCoverUrl(coverTrack) : null}
-            seed={artist.id}
-            label={artist.name}
-            radius={999}
-          />
-        }
-        meta={
-          <>
-            <span>{pluralize(artist.track_count, "track")}</span>
-            {artist.album_count > 0 && (
-              <>
-                <span className="dot" />
-                <span>{pluralize(artist.album_count, "album")}</span>
-              </>
-            )}
-          </>
-        }
-        actions={
-          <Button
-            variant="primary"
-            onClick={() => tracks.length && play(tracks[0], tracks)}
-            disabled={tracks.length === 0}
-            leadingIcon={<PlayIcon className="size-4" />}
-          >
-            Play all
-          </Button>
-        }
-        corner={
-          <DetailTrackSearchBar
-            kind="artist"
-            query={search.query}
-            onQueryChange={search.setQuery}
-            inputRef={search.inputRef}
-            matchCount={search.filteredTracks.length}
-            totalCount={tracks.length}
-            searchActive={search.searchActive}
-          />
-        }
-      />
-      {error && <ErrorBanner message={error} />}
-      <TrackList
-        tracks={search.filteredTracks}
-        queueSource={tracks}
-        emptyState={
-          search.searchActive ? (
-            <EmptyState
-              title="No matches."
-              hint={`Nothing by this artist matches "${search.query}".`}
-            />
-          ) : undefined
-        }
-      />
-    </div>
-  );
-}
-
-function useDetailTrackSearch(
+export function useDetailTrackSearch(
   kind: "album" | "artist",
   tracks: TrackListItem[] | null,
 ) {
@@ -423,7 +330,7 @@ function trackMatchesQuery(track: TrackListItem, query: string): boolean {
     .includes(query);
 }
 
-function DetailTrackSearchBar({
+export function DetailTrackSearchBar({
   kind,
   query,
   onQueryChange,
@@ -479,7 +386,7 @@ function DetailBackRow({ onBack }: { onBack: () => void }) {
   );
 }
 
-function NotFound({
+export function NotFound({
   kind,
   onBack,
 }: {

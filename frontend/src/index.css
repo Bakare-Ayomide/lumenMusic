@@ -1506,6 +1506,286 @@ textarea { font: inherit; color: inherit; }
 }
 
 /* ============================================================
+   Artist page
+   ============================================================ */
+.artist-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.artist-page > .artist-section {
+  margin-top: 16px;
+}
+
+/* Banner: the artist image blurred into a wash behind a crisp round avatar.
+   The ::before scrim fades the wash into the page so the name keeps contrast
+   in both themes. */
+.artist-hero {
+  position: relative;
+  isolation: isolate;
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 300px;
+  padding: 14px 28px 28px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.artist-hero-backdrop {
+  position: absolute;
+  inset: -56px;
+  z-index: -2;
+  opacity: 0.75;
+  filter: blur(44px) saturate(1.4);
+}
+.artist-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--bg) 12%, transparent) 0%,
+    color-mix(in oklch, var(--bg) 42%, transparent) 55%,
+    color-mix(in oklch, var(--bg) 80%, transparent) 100%
+  );
+}
+.artist-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, var(--highlight), transparent 22%);
+  border-radius: inherit;
+  pointer-events: none;
+}
+.btn.artist-hero-back {
+  color: var(--fg);
+  background: color-mix(in oklch, var(--bg) 55%, transparent);
+}
+.btn.artist-hero-back:hover {
+  background: color-mix(in oklch, var(--bg) 75%, transparent);
+}
+.artist-hero-main {
+  display: flex;
+  align-items: flex-end;
+  gap: 28px;
+  min-width: 0;
+}
+.artist-hero-avatar {
+  flex: 0 0 auto;
+  width: clamp(120px, 24cqi, 208px);
+  aspect-ratio: 1 / 1;
+  background: var(--bg-inset);
+  box-shadow:
+    0 18px 48px oklch(0 0 0 / 0.35),
+    0 0 0 1px oklch(1 0 0 / 0.08);
+}
+.artist-hero-body {
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 4px;
+}
+.artist-hero-kind {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.artist-hero-kind .badge {
+  background: color-mix(in oklch, var(--bg) 40%, transparent);
+}
+.artist-hero-name {
+  margin: 8px 0 12px;
+  font-size: clamp(36px, 9cqi, 88px);
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 0.95;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+.artist-hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+/* The separator leads its item so a wrapped line never ends on a dot. */
+.artist-hero-meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.artist-hero-meta > span + span::before {
+  content: "";
+  width: 3px;
+  height: 3px;
+  border-radius: 99px;
+  background: currentColor;
+}
+@container (max-width: 560px) {
+  .artist-hero-main {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 18px;
+  }
+  .artist-hero-avatar {
+    width: 132px;
+  }
+}
+
+.artist-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 4px 0;
+}
+.artist-play {
+  flex: 0 0 56px;
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  cursor: pointer;
+  box-shadow:
+    var(--shadow-md),
+    0 calc(var(--d) * 6px) calc(var(--d) * 20px) color-mix(in oklch, var(--accent) calc(35% * var(--d)), transparent);
+  transition: transform 120ms ease, filter 120ms ease;
+}
+.artist-play:hover {
+  transform: scale(1.04);
+  filter: brightness(1.06);
+}
+.artist-play:active { transform: scale(0.97); }
+.artist-play:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  filter: none;
+}
+.artist-shuffle {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 120ms ease, transform 120ms ease;
+}
+.artist-shuffle:hover {
+  color: var(--fg);
+  transform: scale(1.06);
+}
+.artist-shuffle.active { color: var(--accent-text); }
+/* Active-state dot, so "on" doesn't rely on colour alone. */
+.artist-shuffle.active::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 99px;
+  background: currentColor;
+}
+.artist-shuffle:disabled {
+  opacity: 0.4;
+  cursor: default;
+  transform: none;
+}
+.artist-actions-end {
+  margin-left: auto;
+  min-width: 0;
+}
+.artist-play:focus-visible,
+.artist-shuffle:focus-visible,
+.artist-more:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+@media (max-width: 900px) {
+  .artist-actions-end {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+}
+
+.artist-status {
+  display: grid;
+  gap: 10px;
+}
+
+.artist-section .section-head {
+  align-items: center;
+  margin-bottom: 10px;
+}
+.artist-section .section-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.artist-more {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.artist-more:hover { color: var(--fg); }
+.artist-section > .artist-more { margin-top: 6px; }
+.artist-chips { margin-bottom: 12px; }
+
+/* Curated track lists (popular tracks): no column header, no row rules, and
+   rounded hover rows. The header row stays in the DOM at zero height because
+   the fixed table layout sizes its columns from it, and so screen readers
+   still get the column names. */
+.table-headless thead th {
+  height: 0;
+  padding-block: 0;
+  border-bottom: 0;
+  font-size: 0;
+  line-height: 0;
+}
+.table-headless tbody td {
+  border-bottom-color: transparent;
+}
+.table-headless tbody td:first-child {
+  border-radius: var(--r-md) 0 0 var(--r-md);
+}
+.table-headless tbody td:last-child {
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+}
+.table-headless .col-art { width: 56px; }
+.table-headless .mini-art {
+  width: 40px;
+  height: 40px;
+}
+
+/* ============================================================
    Lyrics sidebar
    ============================================================ */
 .lyrics-sidebar {

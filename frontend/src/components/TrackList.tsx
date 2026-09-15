@@ -35,6 +35,12 @@ interface Props {
   queueSource?: TrackListItem[];
   showCover?: boolean;
   showAlbum?: boolean;
+  /** Column header row. Short curated lists (an artist's popular tracks) omit it. */
+  showHeader?: boolean;
+  /** Selection toolbar ("Select" / export). */
+  selectable?: boolean;
+  /** Per-row source badge; redundant when the whole page is one source. */
+  showSourceBadge?: boolean;
   /** Optional column inserted between Album and Time. Used by /replay to show plays. */
   extraColumn?: {
     header: string;
@@ -53,6 +59,9 @@ export default function TrackList({
   queueSource,
   showCover = true,
   showAlbum = true,
+  showHeader = true,
+  selectable = true,
+  showSourceBadge = true,
   extraColumn,
   selectionControlsHostId,
 }: Props) {
@@ -150,33 +159,37 @@ export default function TrackList({
   const visible = tracks.slice(start, end);
   return (
     <>
-      <TrackSelectionToolbar
-        selectionMode={selectionMode}
-        selectedCount={selectedIds.size}
-        totalCount={tracks.length}
-        exportNotice={exportNotice}
-        allSelected={allSelected}
-        someSelected={someSelected}
-        exporting={exporting}
-        exportDisabled={selectedLocalTracks.length === 0}
-        exportDisabledReason="Selected streaming tracks cannot be exported as files."
-        onToggleMode={() => {
-          setSelectionMode(!selectionMode);
-        }}
-        onSelectAll={selectAll}
-        onExport={handleExportSelected}
-        onClear={() => {
-          setSelectionMode(false);
-          clearSelection();
-        }}
-        hostId={selectionControlsHostId}
-      />
+      {selectable && (
+        <TrackSelectionToolbar
+          selectionMode={selectionMode}
+          selectedCount={selectedIds.size}
+          totalCount={tracks.length}
+          exportNotice={exportNotice}
+          allSelected={allSelected}
+          someSelected={someSelected}
+          exporting={exporting}
+          exportDisabled={selectedLocalTracks.length === 0}
+          exportDisabledReason="Selected streaming tracks cannot be exported as files."
+          onToggleMode={() => {
+            setSelectionMode(!selectionMode);
+          }}
+          onSelectAll={selectAll}
+          onExport={handleExportSelected}
+          onClear={() => {
+            setSelectionMode(false);
+            clearSelection();
+          }}
+          hostId={selectionControlsHostId}
+        />
+      )}
       <div className="table-scroll" data-horizontal-scroll="">
         <div className="table-scroll-inner">
           <table
-            className={`table table-tracks${selectionMode ? " table-selecting" : ""}`}
+            className={`table table-tracks${selectionMode ? " table-selecting" : ""}${showHeader ? "" : " table-headless"}`}
             ref={tableRef}
           >
+            {/* A headless table keeps its <thead> for fixed-layout column
+                widths; the class hides the row. */}
             <thead>
               <tr>
                 {selectionMode && (
@@ -212,6 +225,7 @@ export default function TrackList({
                   index={start + i}
                   showCover={showCover}
                   showAlbum={showAlbum}
+                  showSourceBadge={showSourceBadge}
                   extra={
                     extraColumn
                       ? {
@@ -265,6 +279,7 @@ interface TrackRowProps {
   index: number;
   showCover: boolean;
   showAlbum: boolean;
+  showSourceBadge: boolean;
   extra?: { content: ReactNode; className?: string };
   isNow: boolean;
   isPlaying: boolean;
@@ -291,6 +306,7 @@ export const TrackRow = memo(function TrackRow({
   index,
   showCover,
   showAlbum,
+  showSourceBadge,
   extra,
   isNow,
   isPlaying,
@@ -356,7 +372,7 @@ export const TrackRow = memo(function TrackRow({
       >
         <div className="track-title" title={displayText(track.title)}>
           {displayText(track.title)}
-          {track.source === "tidal" && (
+          {showSourceBadge && track.source === "tidal" && (
             <span className="badge" style={{ marginLeft: 8 }}>
               TIDAL
             </span>

@@ -3,6 +3,7 @@
 // `exports` map in package.json.
 
 export * from "./api";
+export * from "./artist-releases";
 export * from "./audio-format";
 export * from "./events";
 export * from "./format";

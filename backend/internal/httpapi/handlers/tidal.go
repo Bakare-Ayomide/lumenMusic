@@ -26,6 +26,11 @@ type tidalAlbumResp struct {
 	Tracks      []trackListItemResp `json:"tracks"`
 }
 
+type tidalArtistProfileResp struct {
+	Name     string `json:"name"`
+	CoverURL string `json:"cover_url,omitempty"`
+}
+
 func (h *TIDAL) Album(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireUser(w, r); !ok {
 		return
@@ -102,10 +107,14 @@ func (h *TIDAL) Artist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := struct {
-		Albums   []searchAlbumResp   `json:"albums"`
-		Tracks   []trackListItemResp `json:"tracks"`
-		Warnings []string            `json:"warnings,omitempty"`
+		Artist   *tidalArtistProfileResp `json:"artist,omitempty"`
+		Albums   []searchAlbumResp       `json:"albums"`
+		Tracks   []trackListItemResp     `json:"tracks"`
+		Warnings []string                `json:"warnings,omitempty"`
 	}{Albums: []searchAlbumResp{}, Tracks: []trackListItemResp{}, Warnings: result.Warnings}
+	if result.Artist != nil {
+		out.Artist = &tidalArtistProfileResp{Name: result.Artist.Name, CoverURL: proxyRemoteCoverURL(result.Artist.CoverURL)}
+	}
 	for _, album := range result.Albums {
 		out.Albums = append(out.Albums, makeSearchTIDALAlbumResp(album))
 	}
