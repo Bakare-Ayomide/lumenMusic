@@ -11,6 +11,10 @@ type Artist struct {
 	ID, Name, CoverURL string
 }
 
+// TIDAL serves artist pictures at 160, 320, 480 and 750 px only; the 640 px
+// album cover size answers 403 for them.
+const artistPictureSize = 750
+
 func (c *Client) searchCatalog(ctx context.Context, kind, query string, limit, offset int, out any) error {
 	if strings.TrimSpace(c.cfg.HifiAPIURL) == "" {
 		return ErrNotConfigured
@@ -54,13 +58,16 @@ func (c *Client) SearchArtists(ctx context.Context, query string, limit, offset 
 	artists := make([]Artist, 0, len(out.Data.Items))
 	for _, item := range out.Data.Items {
 		if item.ID != "" && item.Name != "" {
-			artists = append(artists, Artist{ID: string(item.ID), Name: item.Name, CoverURL: CoverURL(item.Picture, 640)})
+			artists = append(artists, Artist{ID: string(item.ID), Name: item.Name, CoverURL: CoverURL(item.Picture, artistPictureSize)})
 		}
 	}
 	return artists, len(out.Data.Items), nil
 }
 
 type ArtistReleases struct {
+	// Artist is nil when the proxy couldn't load the profile; the releases
+	// are still usable without it.
+	Artist   *Artist
 	Albums   []Album
 	Tracks   []Track
 	Warnings []string
@@ -75,6 +82,7 @@ func (c *Client) ArtistReleases(ctx context.Context, id string) (ArtistReleases,
 	q.Set("id", id)
 	u.RawQuery = q.Encode()
 	var out struct {
+		Artist *apiArtist `json:"artist"`
 		Albums struct {
 			Items []apiAlbum `json:"items"`
 		} `json:"albums"`
@@ -101,6 +109,9 @@ func (c *Client) ArtistReleases(ctx context.Context, id string) (ArtistReleases,
 		default:
 			return ArtistReleases{}, fmt.Errorf("invalid tidal artist section status")
 		}
+	}
+	if out.Artist != nil && strings.TrimSpace(out.Artist.Name) != "" {
+		result.Artist = &Artist{ID: id, Name: out.Artist.Name, CoverURL: CoverURL(out.Artist.Picture, artistPictureSize)}
 	}
 	for _, item := range out.Albums.Items {
 		if item.ID != "" && item.Title != "" {

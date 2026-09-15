@@ -12,6 +12,8 @@ import httpx
 from fastapi import FastAPI
 
 
+PROFILE_URL = "https://api.tidal.com/v1/artists/123"
+
 hifi = types.ModuleType("main")
 hifi.app = FastAPI()
 hifi.TOKEN_FILE = "/nonexistent/lumen-test-token.json"
@@ -32,15 +34,20 @@ class ArtistTests(unittest.IsolatedAsyncioTestCase):
             "singles": {"items": [{"id": 2, "title": "Single"}]},
             "tracks": {"items": [{"id": 3, "title": "Song"}]},
         }
+        self.profile = {"id": 123, "name": "Artist", "picture": "a-b-c", "popularity": 9}
 
         async def upstream(url, *, params, token, cred):
             self.assertEqual(token, "token")
             self.assertEqual(cred, {"test": True})
             self.assertEqual(params["countryCode"], "US")
-            section = "tracks" if url.endswith("/toptracks") else "singles" if params.get("filter") else "albums"
             self.calls.append((url, params))
-            self.assertEqual(params["limit"], 15 if section == "tracks" else 100)
-            result = self.responses[section]
+            if url == PROFILE_URL:
+                self.assertNotIn("limit", params)
+                result = self.profile
+            else:
+                section = "tracks" if url.endswith("/toptracks") else "singles" if params.get("filter") else "albums"
+                self.assertEqual(params["limit"], 15 if section == "tracks" else 100)
+                result = self.responses[section]
             if isinstance(result, BaseException):
                 raise result
             return result, token, cred
@@ -71,14 +78,22 @@ class ArtistTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(data["failed_sections"], [s for s, f in zip(originals, failed) if f])
                 self.assertEqual(len(data["albums"]["items"]), sum(not f for f in failed[:2]))
                 self.assertEqual(len(data["tracks"]), int(not failed[2]))
-        self.assertEqual(len(self.calls), 24)
-        self.assertTrue(all("/artists/123/" in url for url, _ in self.calls))
+        self.assertEqual(len(self.calls), 32)
+        self.assertTrue(all(url == PROFILE_URL or url.startswith(PROFILE_URL + "/") for url, _ in self.calls))
 
     async def test_successful_empty_is_distinct_from_incomplete_empty(self):
         self.responses = {s: {"items": []} for s in self.responses}
         response = await self.client.get("/lumen/artist?id=123")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"albums": {"items": []}, "tracks": [], "failed_sections": []})
+        self.assertEqual(
+            response.json(),
+            {
+                "artist": {"name": "Artist", "picture": "a-b-c"},
+                "albums": {"items": []},
+                "tracks": [],
+                "failed_sections": [],
+            },
+        )
         self.responses["albums"] = RuntimeError("failed")
         response = await self.client.get("/lumen/artist?id=123")
         self.assertEqual(response.status_code, 200)
@@ -91,6 +106,38 @@ class ArtistTests(unittest.IsolatedAsyncioTestCase):
                 response = await self.client.get("/lumen/artist?id=123")
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json()["failed_sections"], ["albums"])
+
+    async def test_profile_is_trimmed_to_name_and_picture(self):
+        response = await self.client.get("/lumen/artist?id=123")
+        self.assertEqual(response.json()["artist"], {"name": "Artist", "picture": "a-b-c"})
+        self.profile = {"name": "No picture", "picture": None}
+        response = await self.client.get("/lumen/artist?id=123")
+        self.assertEqual(response.json()["artist"], {"name": "No picture", "picture": None})
+
+    async def test_profile_failure_is_not_a_failed_section(self):
+        broken_profiles = (
+            RuntimeError("upstream secret must not leak"),
+            None,
+            [],
+            {"name": ""},
+            {"picture": "a-b-c"},
+            {"name": "Artist", "picture": 5},
+        )
+        for broken in broken_profiles:
+            with self.subTest(broken=broken):
+                self.profile = broken
+                response = await self.client.get("/lumen/artist?id=123")
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn("upstream secret", response.text)
+                data = response.json()
+                self.assertIsNone(data["artist"])
+                self.assertEqual(data["failed_sections"], [])
+                self.assertEqual(len(data["tracks"]), 1)
+
+    async def test_profile_alone_does_not_rescue_total_failure(self):
+        self.responses = {section: RuntimeError("failed") for section in self.responses}
+        response = await self.client.get("/lumen/artist?id=123")
+        self.assertEqual(response.status_code, 502)
 
     async def test_deduplicates_releases_and_accepts_list_payloads(self):
         self.responses["singles"] = [{"id": "1", "title": "Album"}, {"id": 2, "title": "Single"}]
@@ -111,6 +158,11 @@ class ArtistTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancellation_is_not_an_empty_success(self):
         self.responses["albums"] = asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError):
+            await self.client.get("/lumen/artist?id=123")
+
+    async def test_profile_cancellation_is_not_a_missing_profile(self):
+        self.profile = asyncio.CancelledError()
         with self.assertRaises(asyncio.CancelledError):
             await self.client.get("/lumen/artist?id=123")
 

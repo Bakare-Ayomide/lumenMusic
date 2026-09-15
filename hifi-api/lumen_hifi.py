@@ -499,6 +499,10 @@ async def get_lumen_artist(id: int):
     The pinned upstream /artist handler hides failures as empty lists. Keep
     successful sections here, report failed_sections on partial success, and
     return 502 if none of the three requests succeeded.
+
+    The profile (name and picture) is decoration for the release sections, so
+    a failed profile lookup becomes ``artist: null`` instead of a failed
+    section; backends that reject unknown section names keep working.
     """
     if id <= 0:
         raise HTTPException(status_code=400, detail="Invalid artist ID")
@@ -526,13 +530,33 @@ async def get_lumen_artist(id: int):
             raise ValueError("Invalid TIDAL artist section")
         return items
 
+    async def fetch_profile():
+        data, _, _ = await hifi.authed_get_json(
+            f"https://api.tidal.com/v1/artists/{id}",
+            params={"countryCode": hifi.COUNTRY_CODE},
+            token=token,
+            cred=cred,
+        )
+        if not isinstance(data, dict):
+            raise ValueError("Invalid TIDAL artist profile")
+        name, picture = data.get("name"), data.get("picture")
+        if not isinstance(name, str) or not name or not (picture is None or isinstance(picture, str)):
+            raise ValueError("Invalid TIDAL artist profile")
+        return {"name": name, "picture": picture}
+
     sections = ("albums", "singles", "tracks")
-    results = await asyncio.gather(
+    *results, profile = await asyncio.gather(
         fetch_section("albums", limit=100),
         fetch_section("albums", limit=100, filter="EPSANDSINGLES"),
         fetch_section("toptracks", limit=15),
+        fetch_profile(),
         return_exceptions=True,
     )
+    if isinstance(profile, BaseException):
+        if isinstance(profile, asyncio.CancelledError):
+            raise profile
+        logger.warning("Lumen TIDAL artist profile unavailable artist=%s", id)
+        profile = None
     failed_sections = []
     releases = []
     tracks = []
@@ -554,4 +578,9 @@ async def get_lumen_artist(id: int):
                     seen_ids.add(release_id)
     if len(failed_sections) == len(sections):
         raise HTTPException(status_code=502, detail="TIDAL artist unavailable")
-    return {"albums": {"items": releases}, "tracks": tracks, "failed_sections": failed_sections}
+    return {
+        "artist": profile,
+        "albums": {"items": releases},
+        "tracks": tracks,
+        "failed_sections": failed_sections,
+    }

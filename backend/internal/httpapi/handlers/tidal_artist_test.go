@@ -21,11 +21,16 @@ func TestTIDALArtistFailureResponse(t *testing.T) {
 		body    string
 		warning string
 		albums  int
+		artist  *tidalArtistProfileResp
 	}{
-		{"total failure", 502, `{"detail":"private upstream failure"}`, "", 0},
-		{"partial failure", 200, `{"albums":{"items":[{"id":456,"title":"Release"}]},"tracks":[],"failed_sections":["singles"]}`, "Couldn't load singles and EPs.", 1},
-		{"incomplete empty", 200, `{"albums":{"items":[]},"tracks":[],"failed_sections":["albums"]}`, "Couldn't load albums.", 0},
-		{"confirmed empty", 200, `{"albums":{"items":[]},"tracks":[],"failed_sections":[]}`, "", 0},
+		{"total failure", 502, `{"detail":"private upstream failure"}`, "", 0, nil},
+		{"partial failure", 200, `{"albums":{"items":[{"id":456,"title":"Release"}]},"tracks":[],"failed_sections":["singles"]}`, "Couldn't load singles and EPs.", 1, nil},
+		{"incomplete empty", 200, `{"albums":{"items":[]},"tracks":[],"failed_sections":["albums"]}`, "Couldn't load albums.", 0, nil},
+		{"confirmed empty", 200, `{"albums":{"items":[]},"tracks":[],"failed_sections":[]}`, "", 0, nil},
+		{"profile", 200, `{"artist":{"name":"Artist","picture":"a-b-c"},"albums":{"items":[]},"tracks":[],"failed_sections":[]}`, "", 0, &tidalArtistProfileResp{
+			Name:     "Artist",
+			CoverURL: "/api/covers/remote?url=https%3A%2F%2Fresources.tidal.com%2Fimages%2Fa%2Fb%2Fc%2F750x750.jpg",
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,15 +60,19 @@ func TestTIDALArtistFailureResponse(t *testing.T) {
 				return
 			}
 			var result struct {
-				Albums   []searchAlbumResp   `json:"albums"`
-				Tracks   []trackListItemResp `json:"tracks"`
-				Warnings []string            `json:"warnings"`
+				Artist   *tidalArtistProfileResp `json:"artist"`
+				Albums   []searchAlbumResp       `json:"albums"`
+				Tracks   []trackListItemResp     `json:"tracks"`
+				Warnings []string                `json:"warnings"`
 			}
 			if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
 			if result.Albums == nil || result.Tracks == nil || len(result.Albums) != tc.albums {
 				t.Fatalf("bad data: %+v", result)
+			}
+			if (result.Artist == nil) != (tc.artist == nil) || result.Artist != nil && *result.Artist != *tc.artist {
+				t.Fatalf("artist = %+v, want %+v", result.Artist, tc.artist)
 			}
 			if tc.warning == "" && len(result.Warnings) != 0 || tc.warning != "" && (len(result.Warnings) != 1 || result.Warnings[0] != tc.warning) {
 				t.Fatalf("bad warnings: %+v", result.Warnings)

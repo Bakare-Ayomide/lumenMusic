@@ -36,7 +36,7 @@ func TestCatalogSearchPaginationAndMetadata(t *testing.T) {
 	if err != nil || consumed != 2 || len(artists) != 1 {
 		t.Fatalf("%+v consumed=%d err=%v", artists, consumed, err)
 	}
-	if artists[0].ID != "123" || artists[0].CoverURL == "" {
+	if artists[0].ID != "123" || artists[0].CoverURL != "https://resources.tidal.com/images/a/b/c/750x750.jpg" {
 		t.Fatal(artists[0])
 	}
 }
@@ -46,12 +46,43 @@ func TestArtistReleasesUsesBoundedAggregation(t *testing.T) {
 		if r.URL.Path != "/lumen/artist" || r.URL.Query().Get("id") != "123" {
 			t.Errorf("unexpected artist request %s", r.URL)
 		}
-		_, _ = fmt.Fprint(w, `{"albums":{"items":[{"id":456,"title":"Release"}]},"tracks":[{"id":789,"title":"Top song"}],"failed_sections":[]}`)
+		_, _ = fmt.Fprint(w, `{"artist":{"name":"Artist","picture":"a-b-c"},"albums":{"items":[{"id":456,"title":"Release"}]},"tracks":[{"id":789,"title":"Top song"}],"failed_sections":[]}`)
 	}))
 	defer server.Close()
 	result, err := NewClient(Config{HifiAPIURL: server.URL}).ArtistReleases(context.Background(), "123")
 	if err != nil || len(result.Albums) != 1 || len(result.Tracks) != 1 {
 		t.Fatalf("%+v %v", result, err)
+	}
+	want := Artist{ID: "123", Name: "Artist", CoverURL: "https://resources.tidal.com/images/a/b/c/750x750.jpg"}
+	if result.Artist == nil || *result.Artist != want {
+		t.Fatalf("artist = %+v, want %+v", result.Artist, want)
+	}
+}
+
+func TestArtistReleasesToleratesMissingProfile(t *testing.T) {
+	for name, profile := range map[string]string{
+		"null profile":    `"artist":null,`,
+		"absent profile":  ``,
+		"nameless":        `"artist":{"picture":"a-b-c"},`,
+		"picture missing": `"artist":{"name":"Artist","picture":null},`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = fmt.Fprintf(w, `{%s"albums":{"items":[]},"tracks":[],"failed_sections":[]}`, profile)
+			}))
+			defer server.Close()
+			result, err := NewClient(Config{HifiAPIURL: server.URL}).ArtistReleases(context.Background(), "123")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == "picture missing" {
+				if result.Artist == nil || result.Artist.Name != "Artist" || result.Artist.CoverURL != "" {
+					t.Fatalf("artist = %+v", result.Artist)
+				}
+			} else if result.Artist != nil {
+				t.Fatalf("artist = %+v, want nil", result.Artist)
+			}
+		})
 	}
 }
 
