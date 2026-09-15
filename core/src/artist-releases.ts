@@ -78,15 +78,19 @@ export function hasReleaseFilters(releases: ArtistRelease[]): boolean {
   );
 }
 
+/**
+ * Releases for a filter. When the split isn't available (a refresh can drop
+ * one of the kinds), everything is returned rather than an empty shelf for a
+ * filter the user can no longer see or change.
+ */
 export function filterReleases(
   releases: ArtistRelease[],
   filter: ReleaseFilter,
 ): ArtistRelease[] {
-  if (filter === "albums") return releases.filter((release) => release.kind === "Album");
-  if (filter === "singles") {
-    return releases.filter((release) => release.kind === "EP" || release.kind === "Single");
-  }
-  return releases;
+  if (filter === "all" || !hasReleaseFilters(releases)) return releases;
+  return filter === "albums"
+    ? releases.filter((release) => release.kind === "Album")
+    : releases.filter((release) => release.kind === "EP" || release.kind === "Single");
 }
 
 /** "2024 · Single", or "12 tracks" for library albums with no year or kind. */

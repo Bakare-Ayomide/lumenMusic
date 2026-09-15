@@ -182,6 +182,24 @@ it("previews five popular tracks and files releases newest first by kind", async
   expect(cards()).toEqual(["New single | 2024 · Single", "Short EP | 2022 · EP"]);
 });
 
+it("drops a release filter that a retry makes unavailable", async () => {
+  const lp = { id: "tidal:1", title: "LP", release_year: 2020, track_count: 12, duration_ms: 45 * 60_000 };
+  const single = { id: "tidal:2", title: "Single", release_year: 2024, track_count: 1, duration_ms: 3 * 60_000 };
+  mock.artist
+    .mockResolvedValueOnce({ albums: [lp, single], tracks: [], warnings: ["Couldn't load top songs."] })
+    .mockResolvedValueOnce({ albums: [lp], tracks: [] });
+  const view = await show();
+  const titles = () =>
+    [...view.container.querySelectorAll(".card-title")].map((title) => title.textContent);
+  fireEvent.click(screen.getByRole("button", { name: "Singles and EPs" }));
+  expect(titles()).toEqual(["Single"]);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Retry artist" }));
+  });
+  expect(screen.queryByRole("button", { name: "Singles and EPs" })).toBeNull();
+  expect(titles()).toEqual(["LP"]);
+});
+
 it("aborts artist requests when leaving the screen", async () => {
   mock.artist.mockReturnValue(new Promise(() => {}));
   const view = await show();

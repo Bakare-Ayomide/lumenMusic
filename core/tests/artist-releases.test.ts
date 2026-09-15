@@ -61,6 +61,12 @@ it("filters albums from singles and EPs only when both exist", () => {
   expect(hasReleaseFilters(filterReleases(releases, "albums"))).toBe(false);
 });
 
+it("ignores a filter that no longer applies to the releases", () => {
+  const albumsOnly = tidalArtistReleases([album("lp", {}), album("lp2", {})]);
+  expect(filterReleases(albumsOnly, "singles")).toBe(albumsOnly);
+  expect(filterReleases(albumsOnly, "albums")).toBe(albumsOnly);
+});
+
 it("groups library tracks into albums in list order", () => {
   const track = (id: string, album_id?: string, album_title?: string): TrackListItem => ({
     id,

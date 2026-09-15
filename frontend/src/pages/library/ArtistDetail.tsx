@@ -73,6 +73,24 @@ export function ArtistDetailView({
   if (artist === "notfound") {
     return <NotFound kind="Artist" onBack={onBack} />;
   }
+  // A failed load leaves both artist and tracks empty; without this the page
+  // would sit on the loading state with no way back.
+  if (error) {
+    return (
+      <div className="view artist-status">
+        <ErrorBanner message={error} />
+        <div>
+          <Button
+            variant="ghost"
+            onClick={onBack}
+            leadingIcon={<ArrowLeftIcon className="size-3.5" />}
+          >
+            Back to library
+          </Button>
+        </div>
+      </div>
+    );
+  }
   if (!artist || !tracks) {
     return (
       <div className="view">
@@ -105,7 +123,6 @@ export function ArtistDetailView({
           searchActive={search.searchActive}
         />
       </ArtistActions>
-      {error && <ErrorBanner message={error} />}
       {!search.searchActive && releases.length > 0 && (
         <Discography releases={releases} onOpen={onOpenAlbum} />
       )}
