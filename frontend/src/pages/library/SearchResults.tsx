@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import {
   api,
-  errorMessage,
   type Page,
   type SearchResult,
   type SearchType,
@@ -114,96 +113,6 @@ export default function SearchResults({
         total={total}
         loadingMore={loadingMore}
       />
-    </div>
-  );
-}
-
-export function TidalArtistResults({
-  id,
-  name,
-  onBack,
-  onOpenAlbum,
-}: {
-  id: string;
-  name: string;
-  onBack: () => void;
-  onOpenAlbum: (id: string) => void;
-}) {
-  const [data, setData] = useState<Awaited<
-    ReturnType<typeof api.getTidalArtist>
-  > | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const [completedAttempt, setCompletedAttempt] = useState(-1);
-  const loading = completedAttempt !== attempt;
-  const warning = data?.warnings?.join(" ");
-  useEffect(() => {
-    const controller = new AbortController();
-    api
-      .getTidalArtist(id, { signal: controller.signal })
-      .then((result) => {
-        if (!controller.signal.aborted) setData(result);
-      })
-      .catch((err) => {
-        if (!controller.signal.aborted)
-          setError(errorMessage(err, "Couldn't load artist."));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setCompletedAttempt(attempt);
-      });
-    return () => controller.abort();
-  }, [id, attempt]);
-  return (
-    <div className="view" style={{ display: "grid", gap: 18 }}>
-      <div>
-        <Button onClick={onBack}>Back to search</Button>
-      </div>
-      <h1>{name}</h1>
-      {error && <ErrorBanner message={error} />}
-      {warning && <ErrorBanner message={warning} />}
-      {(error || warning) && (
-        <div>
-          <Button
-            disabled={loading}
-            onClick={() => {
-              setError(null);
-              setAttempt((value) => value + 1);
-            }}
-          >
-            {loading ? "Retrying…" : "Retry artist"}
-          </Button>
-        </div>
-      )}
-      {!data && loading && <LoadingState label="Loading artist…" />}
-      {data && (
-        <>
-          {data.tracks.length > 0 && (
-            <section>
-              <h2>Top songs</h2>
-              <TrackList tracks={data.tracks} queueSource={data.tracks} />
-            </section>
-          )}
-          {data.albums.length > 0 && (
-            <section>
-              <h2>Albums</h2>
-              <div className="grid-cards">
-                {data.albums.map((album) => (
-                  <AlbumCard
-                    key={album.id}
-                    album={album}
-                    onOpen={onOpenAlbum}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-          {!data.albums.length &&
-            !data.tracks.length &&
-            !warning &&
-            !error &&
-            !loading && <EmptyState title="No releases found." />}
-        </>
-      )}
     </div>
   );
 }

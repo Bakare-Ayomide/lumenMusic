@@ -9,6 +9,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./api": "./src/api.ts",
+    "./artist-releases": "./src/artist-releases.ts",
     "./audio-format": "./src/audio-format.ts",
     "./storage": "./src/storage.ts",
     "./events": "./src/events.ts",
