@@ -31,7 +31,8 @@ export function Section({
   actionIcon?: SymbolViewProps["name"];
   onAction?: () => void;
   style?: StyleProp<ViewStyle>;
-  children: ReactNode;
+  /** Omitted when the body is rendered by a surrounding list (e.g. track rows). */
+  children?: ReactNode;
 }) {
   const theme = useTheme();
   return (

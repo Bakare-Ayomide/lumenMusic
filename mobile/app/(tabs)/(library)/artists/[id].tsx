@@ -1,20 +1,42 @@
 import { useCallback, useMemo } from "react";
 import {
   ActivityIndicator,
+  PixelRatio,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
 import { useQuery } from "@tanstack/react-query";
-import { Stack, useLocalSearchParams } from "expo-router";
-import { SymbolView } from "expo-symbols";
-import { api, useAuth, type TrackListItem } from "@music-library/core";
+import {
+  Stack,
+  useLocalSearchParams,
+  useRouter,
+  useSegments,
+} from "expo-router";
+import {
+  api,
+  pluralize,
+  trackCoverUrl,
+  useAuth,
+  type TrackListItem,
+} from "@music-library/core";
+import {
+  libraryArtistReleases,
+  type ArtistRelease,
+} from "@music-library/core/artist-releases";
 import { TRACK_FLASH_LIST_PERFORMANCE_PROPS } from "../../../../components/list-performance";
+import {
+  ArtistHero,
+  ARTIST_AVATAR_SIZE,
+} from "../../../../components/artist/artist-hero";
+import { ArtistDiscography } from "../../../../components/artist/artist-discography";
+import { ArtistPlayControls } from "../../../../components/artist/artist-play-controls";
 import {
   useBottomDockInset,
   useDockScrollHandler,
 } from "../../../../components/dock/dock-context";
+import { Section } from "../../../../components/section";
 import { TrackRow } from "../../../../components/track-row";
 import { qk } from "../../../../lib/query-keys";
 import { usePlayQueue } from "../../../../lib/use-play-queue";
@@ -22,6 +44,10 @@ import { useTheme } from "../../../../theme/theme";
 
 export default function ArtistDetailScreen() {
   const theme = useTheme();
+  const router = useRouter();
+  // Also mounted in the Settings stack (for Replay); open albums in whichever
+  // stack this screen lives in so back returns here.
+  const inSettings = (useSegments() as string[]).includes("(settings)");
   const dockInset = useBottomDockInset();
   const dockScroll = useDockScrollHandler();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -44,7 +70,19 @@ export default function ArtistDetailScreen() {
     () => tracksQuery.data ?? [],
     [tracksQuery.data],
   );
+  const releases = useMemo(() => libraryArtistReleases(tracks), [tracks]);
   const onTrackPress = usePlayQueue(tracks);
+
+  const openRelease = useCallback(
+    (release: ArtistRelease) =>
+      router.push({
+        pathname: inSettings
+          ? "/(tabs)/(settings)/albums/[id]"
+          : "/(tabs)/(library)/albums/[id]",
+        params: { id: release.id },
+      }),
+    [router, inSettings],
+  );
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<TrackListItem>) => (
@@ -58,55 +96,35 @@ export default function ArtistDetailScreen() {
   const header = useMemo(() => {
     const artist = artistQuery.data;
     if (!artist) return null;
+    const cover = tracks[0];
+    const imageUri =
+      cover && cover.has_cover !== false
+        ? trackCoverUrl(
+            cover,
+            Math.round(ARTIST_AVATAR_SIZE * PixelRatio.get()),
+          )
+        : null;
+    const detail = [
+      pluralize(artist.track_count, "track"),
+      artist.album_count > 0 && pluralize(artist.album_count, "album"),
+    ]
+      .filter(Boolean)
+      .join(" · ");
     return (
-      <View
-        style={{
-          paddingHorizontal: theme.space.lg,
-          paddingTop: theme.space.xl,
-          paddingBottom: theme.space.md,
-          alignItems: "center",
-          gap: theme.space.md,
-        }}
-      >
-        <View
-          style={{
-            width: 128,
-            height: 128,
-            borderRadius: 64,
-            alignItems: "center",
-            justifyContent: "center",
-            backgroundColor: theme.color.bgElev2,
-          }}
-        >
-          <SymbolView
-            name="person.fill"
-            size={56}
-            tintColor={theme.color.fgMuted}
-          />
-        </View>
-        <View style={{ alignItems: "center", gap: 2 }}>
-          <Text
-            style={{
-              fontSize: 22,
-              fontWeight: "700",
-              color: theme.color.fg,
-              letterSpacing: -0.2,
-              textAlign: "center",
-            }}
-            numberOfLines={2}
-          >
-            {artist.name}
-          </Text>
-          <Text style={{ fontSize: 13, color: theme.color.fgMuted }}>
-            {artist.track_count} {artist.track_count === 1 ? "track" : "tracks"}
-            {artist.album_count
-              ? ` · ${artist.album_count} ${artist.album_count === 1 ? "album" : "albums"}`
-              : ""}
-          </Text>
-        </View>
+      <View style={{ gap: theme.space.lg, paddingBottom: theme.space.sm }}>
+        <ArtistHero name={artist.name} kind="Artist" imageUri={imageUri} />
+        <ArtistPlayControls
+          name={artist.name}
+          tracks={tracks}
+          detail={detail}
+        />
+        {releases.length > 0 && (
+          <ArtistDiscography releases={releases} onOpen={openRelease} />
+        )}
+        {tracks.length > 0 && <Section title="Songs" />}
       </View>
     );
-  }, [artistQuery.data, theme]);
+  }, [artistQuery.data, tracks, releases, openRelease, theme]);
 
   if (artistQuery.isLoading || tracksQuery.isLoading) {
     return (

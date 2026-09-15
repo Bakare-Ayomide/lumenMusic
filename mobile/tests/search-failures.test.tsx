@@ -9,6 +9,7 @@ const mock = vi.hoisted(() => ({
     data: undefined as
       | undefined
       | {
+          artist?: { name: string; cover_url?: string };
           albums: { id: string; title: string }[];
           tracks: { id: string; title: string }[];
           warnings?: string[];
@@ -40,6 +41,7 @@ vi.mock("react-native", () => ({
     mock.retrySearch = onPress;
     return <button>{children}</button>;
   },
+  PixelRatio: { get: () => 2 },
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQuery: () => mock.query,
@@ -60,30 +62,64 @@ vi.mock("@music-library/core", () => ({
   SEARCH_TYPE_OPTIONS: [],
   searchEntityID: vi.fn(),
   useAuth: () => ({ me: { id: "user" } }),
+  pluralize: (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`,
+  resolveCoverUrl: (url: string) => `resolved:${url}`,
+  trackCoverUrl: (track: { id: string }) => `track-cover:${track.id}`,
 }));
 vi.mock("@shopify/flash-list", () => ({
   FlashList: ({
     data,
     ListHeaderComponent,
     ListEmptyComponent,
+    ListFooterComponent,
     renderItem,
   }: {
-    data: { type: string; item: { id: string; title: string } }[];
+    data: unknown[];
     ListHeaderComponent: ReactNode;
     ListEmptyComponent: ReactNode;
-    renderItem: (args: {
-      item: { type: string; item: { id: string; title: string } };
-    }) => ReactNode;
+    ListFooterComponent?: ReactNode;
+    renderItem: (args: { item: unknown; index: number }) => ReactNode;
   }) => (
     <div>
       {ListHeaderComponent}
       {data.length
-        ? data.map((item) => (
-            <div key={item.item.id}>{renderItem({ item })}</div>
+        ? data.map((item, index) => (
+            <div key={index}>{renderItem({ item, index })}</div>
           ))
         : ListEmptyComponent}
+      {ListFooterComponent}
     </div>
   ),
+}));
+vi.mock("../components/artist/artist-hero", () => ({
+  ARTIST_AVATAR_SIZE: 100,
+  ArtistHero: ({ name, imageUri }: { name: string; imageUri: string | null }) => (
+    <header data-image={imageUri ?? "none"}>{name}</header>
+  ),
+}));
+vi.mock("../components/artist/artist-play-controls", () => ({
+  ArtistPlayControls: ({ detail }: { detail?: string }) => <p>{detail}</p>,
+}));
+vi.mock("../components/artist/popular-track-row", () => ({
+  PopularTrackRow: ({ rank, track }: { rank: number; track: { title: string } }) => (
+    <span>{`${rank}. ${track.title}`}</span>
+  ),
+}));
+vi.mock("../components/artist/artist-discography", () => ({
+  ArtistDiscography: ({
+    releases,
+  }: {
+    releases: { title: string; kind?: string }[];
+  }) => (
+    <ul>
+      {releases.map((release) => (
+        <li key={release.title}>{`${release.title} (${release.kind})`}</li>
+      ))}
+    </ul>
+  ),
+}));
+vi.mock("../components/section", () => ({
+  Section: ({ title }: { title: string }) => <h2>{title}</h2>,
 }));
 vi.mock("../components/track-row", () => ({
   TrackRow: ({ track }: { track: { title: string } }) => (
@@ -157,7 +193,7 @@ it("keeps available releases visible with partial failure warnings and during a 
     warnings: ["Couldn't load singles and EPs."],
   };
   expect(markup()).toContain("Couldn&#x27;t load singles and EPs.");
-  expect(markup()).toContain("Available album");
+  expect(markup()).toContain("Available album (Album)");
   mock.query.isError = true;
   expect(markup()).toContain("Couldn&#x27;t load artist.");
   expect(markup()).toContain("Available album");
@@ -180,6 +216,38 @@ it("distinguishes incomplete empty results from confirmed empty results and clea
   expect(html).toContain("No releases found.");
   expect(html).not.toContain("Retry artist");
   expect(html).not.toContain("Couldn");
+});
+
+it("uses the artist profile for the name and picture, falling back to the top track", () => {
+  const track = { id: "t1", title: "Hit" };
+  mock.query.data = { albums: [], tracks: [track] };
+  const fallback = markup();
+  expect(fallback).toContain('data-image="track-cover:t1">Artist</header>');
+  mock.query.data = {
+    artist: { name: "Profile Name", cover_url: "/api/covers/remote?url=x" },
+    albums: [],
+    tracks: [track],
+  };
+  expect(markup()).toContain(
+    'data-image="resolved:/api/covers/remote?url=x">Profile Name</header>',
+  );
+});
+
+it("ranks the first five popular tracks and files releases by kind", () => {
+  mock.query.data = {
+    albums: [
+      { id: "tidal:1", title: "Older", release_year: 2020, track_count: 12, duration_ms: 2_700_000 },
+      { id: "tidal:2", title: "Newer single", release_year: 2024, track_count: 1, duration_ms: 180_000 },
+    ] as { id: string; title: string }[],
+    tracks: Array.from({ length: 7 }, (_, i) => ({ id: `t${i + 1}`, title: `Track ${i + 1}` })),
+  };
+  const collapsed = markup();
+  expect(collapsed).toContain("<h2>Popular</h2>");
+  expect(collapsed).toContain("5. Track 5");
+  expect(collapsed).not.toContain("Track 6");
+  expect(collapsed).toContain("2 releases · 7 popular tracks");
+  expect(collapsed).toMatch(/Newer single \(Single\).*Older \(Album\)/);
+  expect(collapsed).not.toContain("No releases found.");
 });
 
 it("does not confirm an empty search while a stream failed, and offers retry", () => {

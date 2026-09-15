@@ -12,7 +12,8 @@ import { useTheme } from "../../theme/theme";
 
 /**
  * Editorial chart row: oversized rank numeral, artwork, then title with the
- * play count folded into the subtitle so long titles get the full width.
+ * play count (when known) folded into the subtitle so long titles get the
+ * full width.
  */
 export function RankedTrackRow({
   rank,
@@ -23,12 +24,16 @@ export function RankedTrackRow({
 }: {
   rank: number;
   track: TrackListItem;
-  plays: number;
+  plays?: number;
   onPress: (t: TrackListItem) => void;
   style?: StyleProp<ViewStyle>;
 }) {
   const theme = useTheme();
-  const playsLabel = `${plays.toLocaleString()} ${plays === 1 ? "play" : "plays"}`;
+  const playsLabel =
+    plays == null
+      ? null
+      : `${plays.toLocaleString()} ${plays === 1 ? "play" : "plays"}`;
+  const subtitle = [track.artist, playsLabel].filter(Boolean).join(" · ");
   return (
     <Pressable
       onPress={() => {
@@ -80,7 +85,7 @@ export function RankedTrackRow({
             fontVariant: ["tabular-nums"],
           }}
         >
-          {track.artist ? `${track.artist} · ${playsLabel}` : playsLabel}
+          {subtitle}
         </Text>
       </View>
     </Pressable>
