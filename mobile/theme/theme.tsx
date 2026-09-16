@@ -44,6 +44,12 @@ export interface ThemePalette {
   overlayStrong: string;
   overlayMuted: string;
   overlayGrabber: string;
+  /** Scrim and edge painted above interactive glass, below its content. */
+  glassControlSurface: string;
+  glassControlBorder: string;
+  /** Selected playback controls need a distinct fill in either appearance. */
+  controlSelectedBg: string;
+  onControlSelected: string;
 }
 
 export interface ThemeTokens {
@@ -69,6 +75,10 @@ const LIGHT: ThemePalette = {
   overlayStrong: "rgba(0,0,0,0.55)",
   overlayMuted: "rgba(0,0,0,0.12)",
   overlayGrabber: "rgba(0,0,0,0.28)",
+  glassControlSurface: "rgba(0,0,0,0.08)",
+  glassControlBorder: "rgba(0,0,0,0.16)",
+  controlSelectedBg: "#3C3C43",
+  onControlSelected: "#FFFFFF",
 };
 
 const DARK: ThemePalette = {
@@ -86,6 +96,10 @@ const DARK: ThemePalette = {
   overlayStrong: "rgba(255,255,255,0.85)",
   overlayMuted: "rgba(255,255,255,0.18)",
   overlayGrabber: "rgba(255,255,255,0.45)",
+  glassControlSurface: "transparent",
+  glassControlBorder: "transparent",
+  controlSelectedBg: "rgba(255,255,255,0.22)",
+  onControlSelected: "#FFFFFF",
 };
 
 function buildTokens(scheme: ColorScheme): ThemeTokens {

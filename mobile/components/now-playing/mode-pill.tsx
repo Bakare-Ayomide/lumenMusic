@@ -10,7 +10,7 @@ import { useTheme } from "../../theme/theme";
 
 /**
  * Wide glass pill for a queue playback mode (shuffle, repeat). Selection is
- * shown by brightening the translucent fill and the icon tint; the pill
+ * shown with a contrasting fill and icon tint; the pill
  * flexes to share its row with its siblings.
  */
 export function ModePill({
@@ -28,12 +28,10 @@ export function ModePill({
 }) {
   const theme = useTheme();
   const backgroundColor = selected
-    ? theme.scheme === "dark"
-      ? "rgba(255,255,255,0.22)"
-      : "rgba(255,255,255,0.72)"
+    ? theme.color.controlSelectedBg
     : theme.scheme === "dark"
       ? "rgba(255,255,255,0.10)"
-      : "rgba(255,255,255,0.18)";
+      : "transparent";
 
   return (
     <AdaptiveGlass style={[styles.shell, style]} interactive>
@@ -41,6 +39,7 @@ export function ModePill({
         onPress={onPress}
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}
+        accessibilityState={{ selected }}
         style={({ pressed }) => [
           styles.inner,
           { backgroundColor, opacity: pressed ? 0.6 : 1 },
@@ -50,7 +49,7 @@ export function ModePill({
           name={icon}
           size={20}
           weight="regular"
-          tintColor={selected ? theme.color.fg : theme.color.fgSubtle}
+          tintColor={selected ? theme.color.onControlSelected : theme.color.fgSubtle}
         />
       </Pressable>
     </AdaptiveGlass>

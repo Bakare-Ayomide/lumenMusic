@@ -27,7 +27,10 @@ import {
 } from "../components/now-playing/constants";
 import { GlassIconButton } from "../components/now-playing/glass-icon-button";
 import { HeroArtwork } from "../components/now-playing/hero-artwork";
-import { HeroMeta } from "../components/now-playing/hero-meta";
+import {
+  HeroMeta,
+  HERO_META_STAGE_HEIGHT,
+} from "../components/now-playing/hero-meta";
 import { LyricsLanguageSelector } from "../components/now-playing/lyrics-language-selector";
 import {
   LyricsSection,
@@ -48,6 +51,7 @@ import { useTheme } from "../theme/theme";
 
 const ACTION_SIZE = 36;
 const COMPACT_COVER_SIZE = 58;
+const COMPACT_META_SCALE = 0.8;
 const PHONE_BOTTOM_CONTROLS_ESTIMATE = 316;
 const HERO_META_BLOCK_HEIGHT = 54;
 const PHONE_ARTWORK_META_MIN_GAP = 44;
@@ -201,15 +205,19 @@ export default function NowPlayingScreen() {
         coverStartTop + coverSize + PHONE_ARTWORK_META_MIN_GAP,
         bottomControlsTop - HERO_META_BLOCK_HEIGHT - PHONE_META_CONTROLS_GAP,
       );
-  const metaEndTop = 6;
-  const metaEndLeft = COMPACT_COVER_SIZE + 6;
+  const metaEndTop =
+    coverEndTop +
+    (COMPACT_COVER_SIZE - HERO_META_STAGE_HEIGHT * COMPACT_META_SCALE) / 2;
+  const metaEndLeft = COMPACT_COVER_SIZE + theme.space.md;
+  const actionsEndTop = coverEndTop + (COMPACT_COVER_SIZE - ACTION_SIZE) / 2;
   const actionsLeft = Math.max(0, bodyWidth - headerActionsWidth);
   const minimumMetaWidth = translationControlVisible ? 64 : 120;
   const metaStartWidth = Math.max(minimumMetaWidth, actionsLeft - 12);
-  const metaEndWidth = Math.max(
-    minimumMetaWidth,
-    actionsLeft - metaEndLeft - 10,
-  );
+  // Yoga measures before the compact transform. Budget the visible width,
+  // then undo the scale so truncation happens at the actual action boundary.
+  const metaEndWidth =
+    Math.max(0, actionsLeft - metaEndLeft - theme.space.md) /
+    COMPACT_META_SCALE;
   const heroExpandedHeight = metaStartTop + 50;
   const heroCompactHeight = COMPACT_COVER_SIZE + 2;
   const queueBottomInset = measuredBottomControls + 18;
@@ -250,7 +258,7 @@ export default function NowPlayingScreen() {
     transform: [
       { translateX: metaEndLeft * transition.get() },
       { translateY: (metaEndTop - metaStartTop) * transition.get() },
-      { scale: 1 - 0.2 * transition.get() },
+      { scale: 1 - (1 - COMPACT_META_SCALE) * transition.get() },
     ],
   }));
   const expandedMetaStyle = useAnimatedStyle(() => ({
@@ -271,7 +279,9 @@ export default function NowPlayingScreen() {
   }));
 
   const actionsStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: (10 - metaStartTop - 2) * transition.get() }],
+    transform: [
+      { translateY: (actionsEndTop - metaStartTop - 2) * transition.get() },
+    ],
   }));
 
   // The list always has its final viewport. Translating this surface avoids

@@ -140,10 +140,7 @@ function QueueButtonLabel({
             ? [
                 styles.queueButtonSelected,
                 {
-                  backgroundColor:
-                    theme.scheme === "dark"
-                      ? "rgba(255,255,255,0.16)"
-                      : "rgba(255,255,255,0.72)",
+                  backgroundColor: theme.color.controlSelectedBg,
                 },
               ]
             : undefined
@@ -152,20 +149,20 @@ function QueueButtonLabel({
         <SymbolView
           name="list.bullet"
           size={26}
-          tintColor={queueOpen ? theme.color.fg : theme.color.fgMuted}
+          tintColor={queueOpen ? theme.color.onControlSelected : theme.color.fgMuted}
         />
         {shuffle ? (
           <View
             style={[
               styles.shuffleBadge,
-              { backgroundColor: theme.color.overlayMuted },
+              { backgroundColor: theme.color.controlSelectedBg },
             ]}
           >
             <SymbolView
               name="shuffle"
               size={9}
               weight="bold"
-              tintColor={theme.color.fg}
+              tintColor={theme.color.onControlSelected}
             />
           </View>
         ) : null}

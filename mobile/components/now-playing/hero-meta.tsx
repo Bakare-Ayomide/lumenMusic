@@ -9,6 +9,8 @@ import Animated, { FadeInDown, FadeOutUp } from "react-native-reanimated";
 import type { TrackListItem } from "@music-library/core";
 import { useTheme } from "../../theme/theme";
 
+export const HERO_META_STAGE_HEIGHT = 48;
+
 /**
  * Hero title/artist block that cross-fades vertically when the track changes.
  * The parent owns absolute positioning and the open/close scale; this only
@@ -60,7 +62,7 @@ export function HeroMeta({
 
 const styles = StyleSheet.create({
   stage: {
-    minHeight: 48,
+    minHeight: HERO_META_STAGE_HEIGHT,
     position: "relative",
   },
   layer: {
