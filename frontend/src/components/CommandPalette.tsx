@@ -44,6 +44,13 @@ import { useAuth } from "../context/Auth";
 import { usePlayer, useRemotePlayback } from "../context/Player";
 import { useTheme } from "../context/Theme";
 
+const SEARCH_PLACEHOLDER_NOUN: Record<SearchType, string> = {
+  all: "music",
+  track: "songs",
+  album: "albums",
+  artist: "artists",
+};
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -148,6 +155,11 @@ export default function CommandPalette({
       window.clearTimeout(t);
     };
   }, [query, open, searchType]);
+
+  const searching = query.trim().length >= 2;
+  // The palette mounts on open, so a one-time read is enough. Next to the
+  // type switcher a phone-width input only fits the short placeholder.
+  const [compact] = useState(() => window.matchMedia("(max-width: 480px)").matches);
 
   const close = () => onOpenChange(false);
 
@@ -269,7 +281,7 @@ export default function CommandPalette({
         onOpenChange(v);
       }}
       label="Command palette"
-      shouldFilter={query.trim().length < 2}
+      shouldFilter={!searching}
       loop
     >
       <div className="cmdk-input-row">
@@ -294,18 +306,16 @@ export default function CommandPalette({
               e.stopPropagation();
             }
           }}
-          placeholder="Type a command or search music…"
+          placeholder={compact ? `Search ${SEARCH_PLACEHOLDER_NOUN[searchType]}` : `Type a command or search ${SEARCH_PLACEHOLDER_NOUN[searchType]}…`}
         />
-        <kbd className="cmdk-kbd">esc</kbd>
-      </div>
-
-      <div style={{ padding: "10px 12px" }} onKeyDown={(event) => { if (event.key !== "Escape" && event.key !== "Tab") event.stopPropagation(); }}>
-        <SegmentedControl
-          aria-label="Search type"
-          value={searchType}
-          options={SEARCH_TYPE_OPTIONS}
-          onChange={(type) => { setSearchType(type); inputRef.current?.focus(); }}
-        />
+        <div className="cmdk-type" onKeyDown={(event) => { if (event.key !== "Escape" && event.key !== "Tab") event.stopPropagation(); }}>
+          <SegmentedControl
+            aria-label="Search type"
+            value={searchType}
+            options={SEARCH_TYPE_OPTIONS}
+            onChange={(type) => { setSearchType(type); inputRef.current?.focus(); }}
+          />
+        </div>
       </div>
 
       <Command.List className="cmdk-list">
@@ -424,11 +434,11 @@ export default function CommandPalette({
             </Command.Group>
           )}
 
-          {query.trim().length >= 2 && <Command.Item value="show all search results" onSelect={() => run(() => navigate(`/library?q=${encodeURIComponent(query.trim())}&type=${searchType}`))}>
+          {searching && <Command.Item value="show all search results" onSelect={() => run(() => navigate(`/library?q=${encodeURIComponent(query.trim())}&type=${searchType}`))}>
             <MagnifyingGlassIcon className="size-4" /><span>View all results</span>
           </Command.Item>}
 
-          {(query.trim().length < 2 || searchType === "all") && <>
+          {(!searching || searchType === "all") && <>
           <Command.Group heading="Navigate">
             <NavItem icon={MusicalNoteIcon} label="Home" hint="/" onSelect={() => run(() => navigate("/"))} />
             <NavItem icon={QueueListIcon} label="Library" hint="/library" onSelect={() => run(() => navigate("/library"))} />
@@ -516,8 +526,11 @@ export default function CommandPalette({
           <kbd className="cmdk-kbd">↑</kbd>
           <kbd className="cmdk-kbd">↓</kbd> to navigate
         </span>
+        <span className="mono">
+          <kbd className="cmdk-kbd">esc</kbd> to close
+        </span>
         <span style={{ flex: 1 }} />
-        <span className="mono">Lumen</span>
+        <span className="mono cmdk-footer-brand">Lumen</span>
       </div>
       {trackCtxMenu}
     </Command.Dialog>

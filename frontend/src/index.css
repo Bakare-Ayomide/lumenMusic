@@ -3009,6 +3009,7 @@ html[data-mini-player] .np-text {
 }
 .cmdk-input-row input[cmdk-input] {
   flex: 1;
+  min-width: 0;
   background: transparent;
   border: 0;
   outline: none;
@@ -3018,6 +3019,18 @@ html[data-mini-player] .np-text {
 }
 .cmdk-input-row input[cmdk-input]::placeholder {
   color: var(--muted-foreground);
+}
+
+.cmdk-type {
+  flex: 0 0 auto;
+  display: flex;
+}
+.cmdk-type .segmented {
+  height: 28px;
+  padding: 2px;
+}
+.cmdk-type .segmented button {
+  font-size: 12px;
 }
 
 .cmdk-kbd {
@@ -3132,6 +3145,14 @@ html[data-mini-player] .np-text {
   color: var(--muted-foreground);
   position: relative;
   z-index: 1;
+}
+.cmdk-footer > span {
+  white-space: nowrap;
+}
+@media (max-width: 480px) {
+  .cmdk-footer-brand {
+    display: none;
+  }
 }
 
 /* Badges */
