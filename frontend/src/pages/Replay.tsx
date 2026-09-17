@@ -66,7 +66,15 @@ export default function Replay() {
   const { play } = usePlayer();
 
   const [period, setPeriod] = useState<Period>({ kind: "this-year" });
-  const [data, setData] = useState<ReplayData | null>(null);
+  // The response is stored with the period it answers, and read back only when
+  // the two still match. A period switch therefore drops to `data === null` on
+  // the very first render -- before the fetch effect has even run -- so the
+  // previous window's results can never be rendered, animated, or acted on
+  // under the new period's title.
+  const [loaded, setLoaded] = useState<{ key: string; data: ReplayData } | null>(null);
+  // Sticky: the year pills are navigation, not results, and must survive the
+  // gap where `data` is null or the selector would collapse mid-load.
+  const [years, setYears] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [creatingPlaylist, setCreatingPlaylist] = useState(false);
@@ -78,7 +86,12 @@ export default function Replay() {
   // depend on a stable value. `period` only changes identity when the user
   // picks a new pill, so depending on it directly is both correct and
   // exhaustive-deps clean (the old code keyed on a fresh periodKey string).
-  const range = useMemo(() => periodRange(period), [period]);
+  const request = useMemo(
+    () => ({ key: periodKey(period), range: periodRange(period) }),
+    [period],
+  );
+  const range = request.range;
+  const data = loaded?.key === request.key ? loaded.data : null;
 
   useEffect(() => {
     const ac = new AbortController();
@@ -87,9 +100,17 @@ export default function Replay() {
     setLoading(true);
     setError(null);
     api
-      .getReplay(range, { signal: ac.signal })
+      .getReplay(request.range, { signal: ac.signal })
       .then((d) => {
-        setData(d);
+        // Aborting after the response headers arrive does not reject this
+        // promise: the transport drops the caller's abort listener as soon as
+        // `fetch` resolves, before it parses the body. A superseded request
+        // would otherwise clear `loading` while the current one is still in
+        // flight, and the keyed derivation would correctly reject its data --
+        // leaving a blank results area until the real response landed.
+        if (ac.signal.aborted) return;
+        setLoaded({ key: request.key, data: d });
+        setYears(d.available_years ?? []);
         setLoading(false);
       })
       .catch((err) => {
@@ -98,12 +119,9 @@ export default function Replay() {
         setLoading(false);
       });
     return () => ac.abort();
-  }, [range]);
+  }, [request]);
 
-  const options = useMemo(
-    () => buildOptions(data?.available_years ?? []),
-    [data?.available_years],
-  );
+  const options = useMemo(() => buildOptions(years), [years]);
 
   const queue = useMemo<TrackListItem[]>(
     () => (data?.top_tracks ?? []) as TrackListItem[],
@@ -279,7 +297,12 @@ export default function Replay() {
       {createError && <ErrorBanner>{createError}</ErrorBanner>}
       {imageError && <ErrorBanner>{imageError}</ErrorBanner>}
 
-      {loading && !data ? (
+      {/* Any in-flight request shows the loading state, not just the first.
+          Rendering retained data while a new period loads put the previous
+          window's numbers under the new label -- and since the block below is
+          keyed on the period, the key change remounted that stale subtree and
+          replayed its entrance, presenting old results as freshly arrived. */}
+      {loading ? (
         <LoadingState />
       ) : summary && summary.total_plays === 0 ? (
         <EmptyState
@@ -295,7 +318,11 @@ export default function Replay() {
           }
         />
       ) : data && summary ? (
-        <>
+        <div
+          key={periodKey(period)}
+          className="replay-enter"
+          style={{ display: "grid", gap: 18, minWidth: 0 }}
+        >
           <section className="stat-grid">
             <StatCard
               label="Total plays"
@@ -305,7 +332,12 @@ export default function Replay() {
             />
             <StatCard
               label="Listening time"
-              value={formatListeningTime(summary.total_ms)}
+              value={
+                <AnimatedNumber
+                  format={formatListeningTime}
+                  value={summary.total_ms}
+                />
+              }
               title={
                 summary.total_ms >= 60_000
                   ? `${Math.round(summary.total_ms / 60_000).toLocaleString()} minutes total`
@@ -403,7 +435,7 @@ export default function Replay() {
               </div>
             </Section>
           )}
-        </>
+        </div>
       ) : null}
     </div>
   );

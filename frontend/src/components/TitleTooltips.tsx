@@ -1,5 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+  OPEN_DELAY,
+  markTooltipClosed,
+  resetTooltipSkip,
+  shouldSkipDelay,
+} from "../lib/tooltipTiming";
 
 type Side = "top" | "bottom" | "right";
 
@@ -11,6 +17,8 @@ interface Active {
   fromTitle: boolean;
   /** Closed by a click, scroll, or Escape; stays closed until re-hovered. */
   dismissed?: boolean;
+  /** Opened inside the skip-delay window, so it shows with no transition. */
+  instant?: boolean;
   /**
    * A truncation hint on text that isn't clipped. Recomputed whenever the
    * text changes. The title stays blanked so the native tooltip can't show.
@@ -23,9 +31,6 @@ const canOpen = (a: Active) => !a.dismissed && !a.unclippedHint;
 const TARGETS = "[title], button[aria-label], a[aria-label]";
 const DESCRIPTION_ID = "title-tooltip-description";
 
-const OPEN_DELAY = 500;
-/** After a tooltip closes, neighbours open instantly for this long. */
-const SKIP_DELAY_WINDOW = 300;
 const GAP = 6;
 const EDGE = 8;
 
@@ -55,9 +60,14 @@ export default function TitleTooltips() {
   const [visible, setVisible] = useState(false);
   const activeRef = useRef<Active | null>(null);
   const openTimer = useRef<number | null>(null);
-  const lastClosedAt = useRef(0);
+  /** Whether the bubble currently being shown skipped its open delay. */
+  const instantRef = useRef(false);
   /** Whether the bubble for activeRef is currently rendered. */
   const shownRef = useRef(false);
+  /** Whether that bubble reached its visible state -- `shownRef` is set a frame
+   *  earlier, when it is merely mounted, which is too early to credit the
+   *  shared skip window with a tooltip the user saw. */
+  const revealedRef = useRef(false);
 
   useEffect(() => {
     let observer: MutationObserver | null = null;
@@ -131,8 +141,12 @@ export default function TitleTooltips() {
         current.el.setAttribute("title", current.text);
       }
       activeRef.current = null;
+      // Same rule as the rich <Tooltip>: hovering a trigger and leaving before
+      // the bubble was actually revealed must not arm the skip window.
+      const wasRevealed = revealedRef.current;
       shownRef.current = false;
-      lastClosedAt.current = Date.now();
+      revealedRef.current = false;
+      if (wasRevealed) markTooltipClosed();
       setVisible(false);
       setActive(null);
     };
@@ -140,17 +154,29 @@ export default function TitleTooltips() {
     const scheduleOpen = (el: HTMLElement) => {
       const open = () => {
         openTimer.current = null;
+        const current = activeRef.current;
         // Compare by element: a label update may have replaced the object.
-        if (activeRef.current?.el !== el) return;
+        if (current?.el !== el) return;
         shownRef.current = true;
-        setActive(activeRef.current);
+        // Copied off the ref here rather than read during render: the flag
+        // has to travel with the object React renders.
+        const next = { ...current, instant: instantRef.current };
+        activeRef.current = next;
+        setActive(next);
         requestAnimationFrame(() => {
-          if (activeRef.current?.el === el) setVisible(true);
+          if (activeRef.current?.el !== el) return;
+          revealedRef.current = true;
+          setVisible(true);
         });
       };
       clearTimer();
-      if (Date.now() - lastClosedAt.current < SKIP_DELAY_WINDOW) open();
-      else openTimer.current = window.setTimeout(open, OPEN_DELAY);
+      if (shouldSkipDelay()) {
+        instantRef.current = true;
+        open();
+      } else {
+        instantRef.current = false;
+        openTimer.current = window.setTimeout(open, OPEN_DELAY);
+      }
     };
 
     const engage = (el: HTMLElement) => {
@@ -290,7 +316,8 @@ export default function TitleTooltips() {
       if (!activeRef.current) return;
       activeRef.current = { ...activeRef.current, dismissed: true };
       shownRef.current = false;
-      lastClosedAt.current = 0;
+      revealedRef.current = false;
+      resetTooltipSkip();
       setVisible(false);
       setActive(null);
     };
@@ -326,6 +353,7 @@ export default function TitleTooltips() {
       anchor={active.el}
       side={active.side}
       visible={visible}
+      instant={active.instant}
     >
       {active.text}
     </TooltipBubble>,
@@ -364,11 +392,14 @@ export function TooltipBubble({
   anchor,
   side,
   visible,
+  instant,
   children,
 }: {
   anchor: HTMLElement;
   side: Side;
   visible: boolean;
+  /** Opened inside the skip-delay window: show with no entrance transition. */
+  instant?: boolean;
   children: React.ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -416,6 +447,7 @@ export function TooltipBubble({
       role="tooltip"
       className="tooltip"
       data-side={place?.side ?? side}
+      data-instant={instant || undefined}
       data-closed={!visible || !place || undefined}
       style={{
         top: place?.y ?? 0,

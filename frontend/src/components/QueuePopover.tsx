@@ -4,6 +4,7 @@ import { Music as MusicalNoteIcon, X as XMarkIcon } from "lucide-react";
 import { trackCoverUrl } from "../api";
 import { usePlayer, useRemotePlayback } from "../context/Player";
 import { useDismiss } from "../lib/useDismiss";
+import { useTransitionMount } from "../lib/useTransitionMount";
 import CoverArt from "./CoverArt";
 
 interface ExternalQueueTrack {
@@ -51,7 +52,9 @@ export default function QueuePopover({
     ignore: (target) => !!anchor?.contains(target),
   });
 
-  if (!open || !anchor) return null;
+  const { mounted, visible } = useTransitionMount(open, 180);
+
+  if (!mounted || !anchor) return null;
 
   const anchorRect = anchor.getBoundingClientRect();
   const stackRect = miniPlayerMode ? getMiniControlsRect(anchor) : null;
@@ -90,6 +93,10 @@ export default function QueuePopover({
     <div
       ref={ref}
       className={"queue-pop" + (miniPlayerMode ? " queue-pop-mini" : "")}
+      data-closed={!visible || undefined}
+      // Mounted only to play its exit: pointer-events alone would still
+      // leave these controls tabbable and exposed to assistive tech.
+      inert={visible ? undefined : ""}
       role="dialog"
       aria-label="Play queue"
       style={{ bottom, right, width, maxHeight }}
