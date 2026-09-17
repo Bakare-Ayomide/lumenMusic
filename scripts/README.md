@@ -41,19 +41,3 @@ The builds omit the optional `register-scheme` package installed by
 `discord-rpc`. In Electron, Discord uses `app.setAsDefaultProtocolClient`
 instead; that standalone-Node fallback cannot be cross-compiled by node-gyp.
 Other native dependency checks remain enabled.
-
-## CI on the self-hosted runner
-
-CI for pushes to `main` and version tags runs on the `lumen` runner, including
-backend/frontend image builds. Pull-request checks continue on GitHub-hosted
-Ubuntu runners. One registered runner processes one job at a time.
-
-The host needs Git, Docker with access for the runner user, `build-essential`,
-and FFmpeg. Node 20 and Go 1.24 are installed by the existing setup actions in
-the runner tool cache. Python tests run in a pinned Python 3.13.10 container,
-since setup-python does not provide that version for Ubuntu 26.04. Image jobs
-install pinned ARM64 QEMU support before Buildx so both amd64 and arm64 images
-can be built on this x64 host.
-
-Backend tests get an isolated PostgreSQL service with a dynamically assigned
-host port, avoiding conflicts with other local PostgreSQL instances.
