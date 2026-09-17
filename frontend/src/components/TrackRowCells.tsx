@@ -23,7 +23,7 @@ export function PlayingBars({ className }: { className?: string }) {
 /**
  * `.col-idx` cell: playing bars while the row's track is playing, otherwise
  * the zero-padded row number. Pass `onPlay` to also render the hover play
- * button that replaces the number (playlist table behavior).
+ * button that replaces the number or playing bars.
  */
 export function TrackIndexCell({
   index,
@@ -38,32 +38,24 @@ export function TrackIndexCell({
 }) {
   return (
     <td className="col-idx">
-      <span className="play-cell">
+      <span className={clsx("play-cell", onPlay && "play-cell-interactive")}>
         {isPlaying ? (
-          <PlayingBars className="idx-bars" />
+          <PlayingBars />
         ) : (
-          <>
-            <span className="idx-num tabular-nums">{String(index + 1).padStart(2, "0")}</span>
-            {onPlay && (
-              <button
-                type="button"
-                className="idx-play"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onPlay();
-                }}
-                aria-label={playLabel ?? "Play"}
-                style={{
-                  background: "transparent",
-                  border: 0,
-                  color: "var(--foreground)",
-                  cursor: "pointer",
-                }}
-              >
-                <PlayIcon className="size-3.5" />
-              </button>
-            )}
-          </>
+          <span className="tabular-nums">{String(index + 1).padStart(2, "0")}</span>
+        )}
+        {onPlay && (
+          <button
+            type="button"
+            className="idx-play"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPlay();
+            }}
+            aria-label={playLabel ?? "Play"}
+          >
+            <PlayIcon className="size-3.5" />
+          </button>
         )}
       </span>
     </td>

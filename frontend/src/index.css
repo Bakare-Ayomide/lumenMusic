@@ -1325,9 +1325,14 @@ textarea { font: inherit; color: inherit; }
   height: 18px;
   color: inherit;
 }
+.play-cell > * {
+  grid-area: 1 / 1;
+}
 .idx-play {
   all: unset;
-  display: none;
+  display: inline-flex;
+  opacity: 0;
+  pointer-events: none;
   cursor: pointer;
   align-items: center;
   justify-content: center;
@@ -1338,18 +1343,16 @@ textarea { font: inherit; color: inherit; }
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
-.table tbody tr .idx-play { display: none; }
 .table tbody tr:hover .idx-play,
-.table tbody tr:focus-within .idx-play { display: inline-flex; }
-.table tbody tr:hover .idx-num,
-.table tbody tr:focus-within .idx-num { display: none; }
-.table tbody tr.playing .idx-num { display: none; }
-.table tbody tr .idx-bars { display: none; }
-.table tbody tr.playing .idx-bars { display: inline-flex; }
-.table tbody tr.playing:hover .idx-play,
-.table tbody tr.playing:focus-within .idx-play { display: inline-flex; }
-.table tbody tr.playing:hover .idx-bars,
-.table tbody tr.playing:focus-within .idx-bars { display: none; }
+.table tbody tr:focus-within .idx-play {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Keep the bars rendered so hovering never restarts their animation. */
+.table tbody tr:hover .play-cell-interactive > :not(.idx-play),
+.table tbody tr:focus-within .play-cell-interactive > :not(.idx-play) {
+  opacity: 0;
+}
 
 /* Bar visualizer for playing track */
 .playing-bars {
