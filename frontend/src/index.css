@@ -1330,6 +1330,14 @@ textarea { font: inherit; color: inherit; }
 }
 .idx-play {
   all: unset;
+  /* `all: unset` above also resets the `grid-area` set by `.play-cell > *`,
+     so restate it here or the button lands in a second grid row below the
+     number/bars instead of on top of them. */
+  grid-area: 1 / 1;
+  /* The faded number/bars get `opacity: 0`, which makes them a stacking
+     context painted above a plain grid item. Without this the invisible
+     sibling still sits on top of the button and swallows the click. */
+  z-index: 1;
   display: inline-flex;
   opacity: 0;
   pointer-events: none;
