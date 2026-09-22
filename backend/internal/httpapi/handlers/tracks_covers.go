@@ -21,6 +21,7 @@ import (
 
 	"github.com/githubesson/lumen/internal/auth"
 	"github.com/githubesson/lumen/internal/httpx"
+	"github.com/githubesson/lumen/internal/imagesafe"
 	"github.com/githubesson/lumen/internal/library"
 	"github.com/githubesson/lumen/internal/tidal"
 	"github.com/githubesson/lumen/internal/trackref"
@@ -138,7 +139,7 @@ func (h *Tracks) PutAlbumCover(w http.ResponseWriter, r *http.Request) {
 	}
 	// Decode once up front to reject anything that isn't a real, supported
 	// image before it ever reaches storage.
-	if _, _, err := image.Decode(bytes.NewReader(data)); err != nil {
+	if _, _, err := imagesafe.Decode(bytes.NewReader(data)); err != nil {
 		http.Error(w, "file is not a supported image (jpeg, png, webp)", http.StatusBadRequest)
 		return
 	}
@@ -233,16 +234,39 @@ func (h *Tracks) SignCover(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no cover", http.StatusNotFound)
 		return
 	}
-	exp, sig := auth.SignCoverURL(h.CoverSignKey, "album", id.String(), time.Now())
+	// Bind the viewer: their personal-upload cover may be the only one.
+	uid := u.ID
+	coverPath, exp := signedAlbumCoverPath(h.CoverSignKey, id, &uid, time.Now())
 	resp := signCoverResp{
-		URL:       "/api/public/covers/album/" + id.String() + "?exp=" + auth.FormatExp(exp) + "&sig=" + sig,
+		URL:       coverPath,
 		ExpiresAt: exp,
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	// Same-hour sign calls return identical URLs; let intermediaries cache
-	// briefly so the renderer's per-track calls stay cheap.
-	w.Header().Set("Cache-Control", "private, max-age=60")
+	// The URL is bound to the signed-in viewer; a cached copy could hand it
+	// to the next account using the same browser.
+	w.Header().Set("Cache-Control", "private, no-store")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// albumUserCoverKind signs a public album cover URL bound to one user, so
+// that user's personal-upload cover (never shown to anyone else) can be
+// served without a session.
+const albumUserCoverKind = "album-user"
+
+func albumUserCoverID(albumID, userID uuid.UUID) string {
+	return albumID.String() + ":" + userID.String()
+}
+
+// signedAlbumCoverPath returns a signed /api/public/covers/album/ path and its
+// expiry. With userID set the URL also resolves that user's personal cover.
+func signedAlbumCoverPath(key []byte, albumID uuid.UUID, userID *uuid.UUID, now time.Time) (string, int64) {
+	path := "/api/public/covers/album/" + albumID.String()
+	if userID == nil {
+		exp, sig := auth.SignCoverURL(key, "album", albumID.String(), now)
+		return path + "?exp=" + auth.FormatExp(exp) + "&sig=" + sig, exp
+	}
+	exp, sig := auth.SignCoverURL(key, albumUserCoverKind, albumUserCoverID(albumID, *userID), now)
+	return path + "?exp=" + auth.FormatExp(exp) + "&sig=" + sig + "&u=" + userID.String(), exp
 }
 
 // PublicAlbumCover serves an album cover when called with a valid HMAC
@@ -265,11 +289,25 @@ func (h *Tracks) PublicAlbumCover(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad exp", http.StatusBadRequest)
 		return
 	}
-	if err := auth.VerifyCoverURL(h.CoverSignKey, "album", id.String(), sig, exp, time.Now()); err != nil {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
+	var key string
+	if rawUser := q.Get("u"); rawUser != "" {
+		userID, err := uuid.Parse(rawUser)
+		if err != nil {
+			http.Error(w, "bad u", http.StatusBadRequest)
+			return
+		}
+		if err := auth.VerifyCoverURL(h.CoverSignKey, albumUserCoverKind, albumUserCoverID(id, userID), sig, exp, time.Now()); err != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		key, err = h.Library.AlbumCoverPathForUser(r.Context(), id, userID)
+	} else {
+		if err := auth.VerifyCoverURL(h.CoverSignKey, "album", id.String(), sig, exp, time.Now()); err != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		key, err = h.Library.AlbumCoverPath(r.Context(), id)
 	}
-	key, err := h.Library.AlbumCoverPath(r.Context(), id)
 	if err != nil && !errors.Is(err, library.ErrNotFound) {
 		// A DB failure is not "no stored cover": falling through to the remote
 		// fetch produced a 404 that Discord's media proxy then cached.
@@ -534,7 +572,7 @@ func (h *Tracks) serveResizedImage(
 		http.ServeContent(w, r, path.Base(thumbKey), zeroTime(), cached)
 		return true
 	}
-	src, _, err := image.Decode(body)
+	src, _, err := imagesafe.Decode(body)
 	if err != nil {
 		return false
 	}

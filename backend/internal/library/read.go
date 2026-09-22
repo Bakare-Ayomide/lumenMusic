@@ -34,6 +34,7 @@ type TrackDetail struct {
 	Artists         []TrackArtist
 	Aliases         []TrackAlias
 	CoverArtPath    string
+	OwnerID         *uuid.UUID // nil for global tracks
 	CreatedAt       time.Time
 }
 
@@ -81,13 +82,31 @@ type TrackAlias struct {
 	AlbumTitle  string
 }
 
+// albumCoverFor is the cover of album "a" as seen by userExpr (a SQL
+// expression): shared artwork first, otherwise that user's own personal-upload
+// cover. Personal covers never leak to other users.
+func albumCoverFor(userExpr string) string {
+	return `COALESCE(NULLIF(a.cover_art_path, ''), (
+		SELECT pc.cover_art_path FROM album_personal_covers pc
+		WHERE pc.album_id = a.id AND pc.user_id = ` + userExpr + `))`
+}
+
+// albumHasCoverFor reports whether albumCoverFor(userExpr) is non-empty.
+func albumHasCoverFor(userExpr string) string {
+	return `(NULLIF(a.cover_art_path, '') IS NOT NULL OR EXISTS (
+		SELECT 1 FROM album_personal_covers pc
+		WHERE pc.album_id = a.id AND pc.user_id = ` + userExpr + `))`
+}
+
 // trackDetailSelect is the shared single-track projection used by GetTrack and
-// GetTrackPublic; the two differ only in whether the viewer-visibility
-// predicate is appended.
-const trackDetailSelect = `
+// GetTrackPublic. coverUser is the SQL expression whose personal album cover
+// may be used: the viewer for GetTrack, the track's owner for public reads
+// (so a global track never carries anyone's personal art to the public).
+func trackDetailSelect(coverUser string) string {
+	return `
 	SELECT
 		t.id, t.title, t.album_id,
-		a.title, a.cover_art_path,
+		a.title, ` + albumCoverFor(coverUser) + `,
 		COALESCE(t.track_no, 0), COALESCE(t.disc_no, 0),
 		t.duration_ms,
 		COALESCE(t.genre, ''), COALESCE(t.year, 0),
@@ -97,23 +116,24 @@ const trackDetailSelect = `
 		t.file_path, t.file_size,
 		t.source, t.external_id, COALESCE(t.external_meta->>'album_id', ''),
 		COALESCE(t.external_meta->>'cover_url', ''),
-		t.created_at
+		t.created_at, t.owner_id
 	FROM tracks t
 	LEFT JOIN albums a ON a.id = t.album_id
 	WHERE t.id = $1 AND t.deleted_at IS NULL`
+}
 
 // GetTrack returns the full metadata for a single track by id, including
 // joined artists and album info. Returns ErrNotFound if missing, soft-deleted,
 // or not visible to viewerID (not global and not owned by viewerID).
 func (s *Store) GetTrack(ctx context.Context, id, viewerID uuid.UUID) (*TrackDetail, error) {
-	return s.getTrackDetail(ctx, trackDetailSelect+` AND `+trackVisibleP2, id, viewerID)
+	return s.getTrackDetail(ctx, trackDetailSelect("$2")+` AND `+trackVisibleP2, id, viewerID)
 }
 
 // GetTrackPublic returns the full metadata for a single track without the
 // per-viewer owner filter — callers gate access via some other mechanism
 // (today: the HMAC signature on a share URL). Skips the favorite join.
 func (s *Store) GetTrackPublic(ctx context.Context, id uuid.UUID) (*TrackDetail, error) {
-	return s.getTrackDetail(ctx, trackDetailSelect, id)
+	return s.getTrackDetail(ctx, trackDetailSelect("t.owner_id"), id)
 }
 
 // getTrackDetail runs a trackDetailSelect-shaped query (args[0] must be the
@@ -136,7 +156,7 @@ func (s *Store) getTrackDetail(ctx context.Context, query string, args ...any) (
 		&t.Bitrate, &t.SampleRate, &t.Channels,
 		&t.FilePath, &t.FileSize,
 		&t.Source, &t.ExternalID, &t.ExternalAlbumID, &t.CoverURL,
-		&t.CreatedAt,
+		&t.CreatedAt, &t.OwnerID,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -187,12 +207,30 @@ func (s *Store) AlbumCoverPath(ctx context.Context, albumID uuid.UUID) (string, 
 	return *p, nil
 }
 
+// AlbumCoverPathForUser returns the album cover as seen by userID (shared
+// artwork, else that user's personal-upload cover) without a visibility
+// check. Only for signed public URLs, whose signature binds the user.
+func (s *Store) AlbumCoverPathForUser(ctx context.Context, albumID, userID uuid.UUID) (string, error) {
+	var p *string
+	err := s.db.QueryRow(ctx, `SELECT `+albumCoverFor("$2")+` FROM albums a WHERE a.id = $1`, albumID, userID).Scan(&p)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	if p == nil || *p == "" {
+		return "", ErrNotFound
+	}
+	return *p, nil
+}
+
 // AlbumCoverPathForViewer looks up cover art only when the album has at least
 // one track visible to viewerID. Use this for authenticated cover routes.
 func (s *Store) AlbumCoverPathForViewer(ctx context.Context, albumID, viewerID uuid.UUID) (string, error) {
 	var p *string
 	err := s.db.QueryRow(ctx, `
-		SELECT a.cover_art_path
+		SELECT `+albumCoverFor("$2")+`
 		FROM albums a
 		WHERE a.id = $1
 		  AND EXISTS (
@@ -367,7 +405,7 @@ func (s *Store) ListAlbums(ctx context.Context, viewerID uuid.UUID, limit, offse
 		SELECT a.id, a.title, a.album_artist_id, COALESCE(aa.name, ''),
 		       a.is_compilation, COALESCE(a.release_year, 0),
 		       COUNT(t.id)::int, COALESCE(SUM(t.duration_ms), 0)::bigint,
-		       (a.cover_art_path IS NOT NULL AND a.cover_art_path <> '') AS has_cover
+		       `+albumHasCoverFor("$1")+` AS has_cover
 		FROM albums a
 		LEFT JOIN artists aa ON aa.id = a.album_artist_id
 		INNER JOIN tracks t ON t.album_id = a.id
@@ -423,8 +461,8 @@ func (s *Store) GetAlbum(ctx context.Context, albumID, viewerID uuid.UUID) (*Alb
 		SELECT a.id, a.title, a.album_artist_id, COALESCE(aa.name, ''),
 		       a.is_compilation, COALESCE(a.release_year, 0),
 		       COUNT(t.id)::int, COALESCE(SUM(t.duration_ms), 0)::bigint,
-		       (a.cover_art_path IS NOT NULL AND a.cover_art_path <> '') AS has_cover,
-		       a.cover_art_path
+		       `+albumHasCoverFor("$2")+` AS has_cover,
+		       `+albumCoverFor("$2")+`
 		FROM albums a
 		LEFT JOIN artists aa ON aa.id = a.album_artist_id
 		INNER JOIN tracks t ON t.album_id = a.id

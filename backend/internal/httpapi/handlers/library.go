@@ -24,9 +24,19 @@ type Library struct {
 	Library    *library.Store
 	Background context.Context
 	StartJob   func(func())
+	// UploadQuotaBytes caps a non-admin user's total personal uploads; 0
+	// disables the cap.
+	UploadQuotaBytes int64
 
 	mu     sync.Mutex
 	rescan *ingest.RescanProgress
+
+	// uploadLocks holds one single-slot channel per user. A quota-limited upload
+	// holds its user's lock from the usage check through ingest, so
+	// concurrent requests cannot all pass the check against the same usage.
+	// In-process only: run one backend replica, or put the check behind a
+	// shared lock, if you scale out.
+	uploadLocks sync.Map
 }
 
 const (
@@ -117,6 +127,19 @@ func (h *Library) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 	results := make([]result, 0, len(files))
 
+	enforceQuota := ownerID != nil && u.Role != models.RoleAdmin && h.UploadQuotaBytes > 0
+	if enforceQuota {
+		v, _ := h.uploadLocks.LoadOrStore(u.ID, make(chan struct{}, 1))
+		lock := v.(chan struct{})
+		select {
+		case lock <- struct{}{}:
+			defer func() { <-lock }()
+		case <-r.Context().Done():
+			http.Error(w, "upload cancelled", http.StatusServiceUnavailable)
+			return
+		}
+	}
+
 	for _, fh := range files {
 		name := filepath.Base(fh.Filename)
 		if !ingest.IsSupported(name) {
@@ -126,6 +149,20 @@ func (h *Library) Upload(w http.ResponseWriter, r *http.Request) {
 		if fh.Size > maxUploadFileBytes {
 			results = append(results, result{File: fh.Filename, Error: "file too large"})
 			continue
+		}
+		if enforceQuota {
+			used, err := h.Library.PersonalUploadBytes(r.Context(), u.ID)
+			if err != nil {
+				h.log().Error("upload: quota lookup failed", "user", u.ID, "err", err)
+				results = append(results, result{File: fh.Filename, Error: "internal error"})
+				continue
+			}
+			if used+fh.Size > h.UploadQuotaBytes {
+				h.log().Warn("upload: personal storage quota exceeded",
+					"user", u.ID, "file", fh.Filename, "used_bytes", used, "quota_bytes", h.UploadQuotaBytes)
+				results = append(results, result{File: fh.Filename, Error: "storage quota exceeded"})
+				continue
+			}
 		}
 		if err := os.MkdirAll(destDir, 0o755); err != nil {
 			h.log().Error("upload: could not create destination directory — check filesystem permissions on the music volume",
@@ -173,6 +210,11 @@ func (h *Library) Upload(w http.ResponseWriter, r *http.Request) {
 			h.log().Error("upload: ingest failed after the file was written to disk",
 				"user", u.ID, "file", fh.Filename, "dst", dst, "err", res.Err)
 			rr.Error = res.Err.Error()
+			// .users/ is outside the watcher, so nothing would ever retry or
+			// clean up a failed personal upload; don't let junk accumulate.
+			if ownerID != nil {
+				removeFailedUpload(h.log(), res.Path, dst)
+			}
 		}
 		results = append(results, rr)
 	}
@@ -270,6 +312,18 @@ func (h *Library) Errors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, errs)
+}
+
+// removeFailedUpload deletes a personal upload whose ingest failed. Ingest
+// may have renamed the file (invalid UTF-8 names), so prefer its final path.
+func removeFailedUpload(log *slog.Logger, ingestedPath, written string) {
+	p := written
+	if ingestedPath != "" {
+		p = ingestedPath
+	}
+	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Warn("upload: removing failed upload", "path", p, "err", err)
+	}
 }
 
 // createUniqueUpload atomically reserves a destination name and returns the

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -289,7 +290,16 @@ func (h *Share) Create(w http.ResponseWriter, r *http.Request) {
 			Title:       t.Title,
 			Artist:      primaryArtistName(t),
 		}
-		job := func() { h.prewarmPreview(t, in) }
+		// Renders are cached per (track, start, duration) and served to anyone
+		// with a share link, so build from the public view of the track: a
+		// global track must not carry the sharer's personal album art.
+		pub, err := h.Library.GetTrackPublic(r.Context(), id)
+		if err != nil {
+			slog.Warn("preview prewarm skipped: public track lookup failed",
+				"track_id", id.String(), "err", err)
+			break
+		}
+		job := func() { h.prewarmPreview(pub, in) }
 		if h.StartJob != nil {
 			h.StartJob(job)
 		} else {
@@ -419,9 +429,8 @@ func (h *Share) Page(w http.ResponseWriter, r *http.Request) {
 	var accentColor string
 	now := time.Now()
 	if t.AlbumID != nil {
-		cExp, cSig := auth.SignCoverURL(h.ShareSignKey, "album", t.AlbumID.String(), now)
-		coverURL = base + "/api/public/covers/album/" + t.AlbumID.String() +
-			"?exp=" + auth.FormatExp(cExp) + "&sig=" + cSig
+		coverPath, _ := signedAlbumCoverPath(h.ShareSignKey, *t.AlbumID, t.OwnerID, now)
+		coverURL = base + coverPath
 		accentColor = h.accentColorForTrack(r.Context(), t)
 	}
 
@@ -511,9 +520,8 @@ func (h *Share) PublicInfo(w http.ResponseWriter, r *http.Request) {
 	var albumID string
 	if t.AlbumID != nil {
 		albumID = t.AlbumID.String()
-		cExp, cSig := auth.SignCoverURL(h.ShareSignKey, "album", albumID, now)
-		coverURL = base + "/api/public/covers/album/" + albumID +
-			"?exp=" + auth.FormatExp(cExp) + "&sig=" + cSig
+		coverPath, _ := signedAlbumCoverPath(h.ShareSignKey, *t.AlbumID, t.OwnerID, now)
+		coverURL = base + coverPath
 		accentColor = h.accentColorForTrack(r.Context(), t)
 	}
 
@@ -656,16 +664,28 @@ func (h *Share) audioPathForBuild(ctx context.Context, t *library.TrackDetail) (
 	if h.TIDAL == nil {
 		return "", noop, tidal.ErrNotConfigured
 	}
+	// The slot is held until cleanup so the number of full-track temp files
+	// alive at once stays bounded, not just the number of downloads.
+	if err := tidalAudioSem.Acquire(ctx, 1); err != nil {
+		return "", noop, err
+	}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { tidalAudioSem.Release(1) }) }
 	resp, err := h.TIDAL.FileResponse(ctx, t.ExternalID, nil)
 	if err != nil {
+		release()
 		return "", noop, err
 	}
 	defer resp.Body.Close()
 	tmp, err := os.CreateTemp("", "lumen-tidal-audio-*")
 	if err != nil {
+		release()
 		return "", noop, err
 	}
-	cleanup := func() { _ = os.Remove(tmp.Name()) }
+	cleanup := func() {
+		_ = os.Remove(tmp.Name())
+		release()
+	}
 	// Bounded: three of the four callers are signature-only (no cookie), and
 	// the temp dir is commonly tmpfs — i.e. RAM. A misbehaving proxy that
 	// streams indefinitely, or a handful of concurrent preview builds for long
@@ -694,8 +714,8 @@ func writeAudioResolveError(w http.ResponseWriter, err error) {
 // coverPathWithFallback materializes the cover for ffmpeg, downgrading to a
 // coverless render on failure (non-fatal). failMsg is the endpoint-specific
 // warn message. The returned cleanup is always safe to call.
-func (h *Share) coverPathWithFallback(r *http.Request, t *library.TrackDetail, id uuid.UUID, failMsg string) (string, func()) {
-	coverFSPath, cleanupCover, err := h.coverToTemp(r.Context(), t)
+func (h *Share) coverPathWithFallback(ctx context.Context, t *library.TrackDetail, id uuid.UUID, failMsg string) (string, func()) {
+	coverFSPath, cleanupCover, err := h.coverToTemp(ctx, t)
 	if err != nil {
 		if t.CoverArtPath != "" || t.CoverURL != "" {
 			slog.Warn(failMsg,
@@ -749,33 +769,9 @@ func (h *Share) PublicPreviewVideo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	audioPath, cleanupAudio, err := h.audioPathForBuild(r.Context(), t)
+	outPath, err := h.buildPublicPreview(r, t, req, "preview video serve")
 	if err != nil {
-		slog.Error("preview video serve: audio materialize failed",
-			"track_id", req.id.String(), "source", t.Source, "err", err)
-		writeAudioResolveError(w, err)
-		return
-	}
-	defer cleanupAudio()
-	coverFSPath, cleanupCover := h.coverPathWithFallback(r, t, req.id,
-		"preview video serve: cover materialize failed; falling back to audio-only")
-	defer cleanupCover()
-
-	outPath, err := h.Preview.EnsureBuilt(r.Context(), preview.Input{
-		TrackID:     req.id.String(),
-		AudioPath:   audioPath,
-		CoverPath:   coverFSPath,
-		StartSec:    req.startSec,
-		DurationSec: req.durationSec,
-	})
-	if err != nil {
-		slog.Error("preview video serve: EnsureBuilt failed",
-			"track_id", req.id.String(),
-			"start_sec", req.startSec,
-			"audio_path", audioPath,
-			"cover_path", coverFSPath,
-			"err", err)
-		http.Error(w, "preview generation failed", http.StatusInternalServerError)
+		writePublicBuildError(w, err, "preview generation failed")
 		return
 	}
 	serveMediaFile(w, r, outPath, "preview missing", "public, max-age=3600")
@@ -823,9 +819,8 @@ func (h *Share) Embed(w http.ResponseWriter, r *http.Request) {
 	var coverURL string
 	var accentColor string
 	if t.AlbumID != nil {
-		cExp, cSig := auth.SignCoverURL(h.ShareSignKey, "album", t.AlbumID.String(), now)
-		coverURL = base + "/api/public/covers/album/" + t.AlbumID.String() +
-			"?exp=" + auth.FormatExp(cExp) + "&sig=" + cSig
+		coverPath, _ := signedAlbumCoverPath(h.ShareSignKey, *t.AlbumID, t.OwnerID, now)
+		coverURL = base + coverPath
 		accentColor = h.accentColorForTrack(r.Context(), t)
 	}
 
@@ -879,37 +874,49 @@ func (h *Share) PublicPreview(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	audioPath, cleanupAudio, err := h.audioPathForBuild(r.Context(), t)
+	outPath, err := h.buildPublicPreview(r, t, req, "preview serve")
 	if err != nil {
-		slog.Error("preview serve: audio materialize failed",
-			"track_id", req.id.String(), "source", t.Source, "err", err)
-		writeAudioResolveError(w, err)
-		return
-	}
-	defer cleanupAudio()
-	// Non-fatal — builder will emit an audio-only (black frame) MP4.
-	coverFSPath, cleanupCover := h.coverPathWithFallback(r, t, req.id,
-		"preview serve: cover materialize failed; falling back to audio-only")
-	defer cleanupCover()
-
-	outPath, err := h.Preview.EnsureBuilt(r.Context(), preview.Input{
-		TrackID:     req.id.String(),
-		AudioPath:   audioPath,
-		CoverPath:   coverFSPath,
-		StartSec:    req.startSec,
-		DurationSec: req.durationSec,
-	})
-	if err != nil {
-		slog.Error("preview serve: EnsureBuilt failed",
-			"track_id", req.id.String(),
-			"start_sec", req.startSec,
-			"audio_path", audioPath,
-			"cover_path", coverFSPath,
-			"err", err)
-		http.Error(w, "preview generation failed", http.StatusInternalServerError)
+		writePublicBuildError(w, err, "preview generation failed")
 		return
 	}
 	serveMediaFile(w, r, outPath, "preview missing", immutableCacheControl(req.exp))
+}
+
+// buildPublicPreview materializes the audio and cover for t and builds the
+// square preview MP4, coalescing concurrent requests for the same output.
+func (h *Share) buildPublicPreview(r *http.Request, t *library.TrackDetail, req signedMediaRequest, logPrefix string) (string, error) {
+	key := publicBuildKey("preview", req.id.String(), req.startSec, req.durationSec)
+	return buildPublicMedia(r, key, func(ctx context.Context) (string, error) {
+		audioPath, cleanupAudio, err := h.audioPathForBuild(ctx, t)
+		if err != nil {
+			slog.Error(logPrefix+": audio materialize failed",
+				"track_id", req.id.String(), "source", t.Source, "err", err)
+			return "", audioResolveError{err}
+		}
+		defer cleanupAudio()
+		// Non-fatal — builder will emit an audio-only (black frame) MP4.
+		coverFSPath, cleanupCover := h.coverPathWithFallback(ctx, t, req.id,
+			logPrefix+": cover materialize failed; falling back to audio-only")
+		defer cleanupCover()
+
+		outPath, err := h.Preview.EnsureBuilt(ctx, preview.Input{
+			TrackID:     req.id.String(),
+			AudioPath:   audioPath,
+			CoverPath:   coverFSPath,
+			StartSec:    req.startSec,
+			DurationSec: req.durationSec,
+		})
+		if err != nil {
+			slog.Error(logPrefix+": EnsureBuilt failed",
+				"track_id", req.id.String(),
+				"start_sec", req.startSec,
+				"audio_path", audioPath,
+				"cover_path", coverFSPath,
+				"err", err)
+			return "", err
+		}
+		return outPath, nil
+	})
 }
 
 // coverToTemp materializes the cover art to a readable local path so ffmpeg
