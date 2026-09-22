@@ -52,7 +52,12 @@ const h = vi.hoisted(() => {
     finishSeek: () => resolveSeek?.(),
     captureSeekCompletion: () => resolveSeek,
     failSeek: () => rejectSeek?.(),
-    emitStatus: (status: unknown) => statusListener?.(status),
+    emitStatus: (status: unknown, liveStatus = status) => {
+      // Native events are snapshots: the live getter can already be ahead of
+      // the event when JS receives it. Match them unless testing that delay.
+      fakePlayer.currentStatus = liveStatus as typeof fakePlayer.currentStatus;
+      statusListener?.(status);
+    },
   };
 });
 
@@ -71,6 +76,14 @@ vi.mock("react", () => ({
 vi.mock("expo-audio", () => ({
   clearPreloadedSource: async () => {},
   preload: async () => {},
+}));
+
+vi.mock("react-native", () => ({
+  AppState: { currentState: "active", addEventListener: () => ({ remove() {} }) },
+}));
+vi.mock("expo-updates", () => ({ updateId: "test-update", runtimeVersion: "test-runtime" }));
+vi.mock("../lib/diagnostics/playback", () => ({
+  createPlaybackDiagnostics: () => ({ record() {}, source() {}, observe() {} }),
 }));
 
 vi.mock("expo-modules-core", () => ({
@@ -246,6 +259,42 @@ describe("useExpoAudioAdapter status → event translation", () => {
     expect(events).toEqual(["play"]);
   });
 
+  it.each(["paused", "noItemToPlay"])("does not turn a stale %s snapshot into a real pause while the stream buffers", (stale) => {
+    const { adapter, events } = setup();
+    // Replay the on-device 15:08:59 trace: waiting -> stale no-item snapshot,
+    // while the live player is still waiting for enough buffered audio.
+    const buffering = status({
+      isLoaded: false,
+      duration: 0,
+      currentTime: 0,
+      isBuffering: true,
+      timeControlStatus: "waitingToPlayAtSpecifiedRate",
+      reasonForWaitingToPlay: "toMinimizeStalls",
+    });
+    adapter.on("pause", () => adapter.pause());
+    h.emitStatus(buffering);
+    h.emitStatus({
+      ...buffering,
+      timeControlStatus: stale === "paused" ? "paused" : "waitingToPlayAtSpecifiedRate",
+      reasonForWaitingToPlay: stale === "paused" ? "unknown" : stale,
+    }, buffering);
+    expect(events).toEqual(["play"]);
+    expect(h.calls).not.toContain("pause");
+
+    // Do not lose the playing diff: a subsequent real lock-screen/system
+    // pause must still be delivered, even if playback never left buffering.
+    h.emitStatus(status({ currentTime: 0, playing: false }));
+    expect(events).toEqual(["play", "pause"]);
+  });
+
+  it("ignores a queued playing snapshot after the native player has paused", () => {
+    const { events } = setup();
+    h.emitStatus(playingStatus(), status({ currentTime: 91.593 }));
+    expect(events).toEqual([]);
+    h.emitStatus(playingStatus());
+    expect(events).toEqual(["play"]);
+  });
+
   it("dispatches pause when the user pauses during a stall", () => {
     const { events } = setup();
 
@@ -267,6 +316,45 @@ describe("useExpoAudioAdapter status → event translation", () => {
     h.emitStatus(playingStatus());
     h.emitStatus(status({ playing: false, didJustFinish: true }));
     expect(events).toEqual(["play", "ended"]);
+  });
+
+  it("preserves a finish notification while the live getter still reports playing", () => {
+    const { events } = setup();
+    h.emitStatus(playingStatus());
+    // Seen at every successful album boundary in the device trace. The live
+    // getter has no didJustFinish flag and can still be playing at delivery.
+    h.emitStatus(status({ playing: false, didJustFinish: true, currentTime: 100 }),
+      status({ playing: true, didJustFinish: false, currentTime: 100, timeControlStatus: "playing" }));
+    expect(events).toEqual(["play", "ended"]);
+  });
+
+  it("does not cancel a loop when a paused tick arrives before the finish notification", async () => {
+    const { adapter, events } = setup();
+    // Match the core: a pause becomes a pause command; an end seeks and plays.
+    adapter.on("pause", () => adapter.pause());
+    let restart: Promise<void> | undefined;
+    adapter.on("ended", () => {
+      adapter.seek(0);
+      restart = adapter.play();
+    });
+    h.emitStatus(playingStatus());
+    // iOS's periodic observer and end observer are independent. Ordinary
+    // snapshots always contain didJustFinish=false, even at the end.
+    h.emitStatus(status({ currentTime: 100 }));
+    h.emitStatus(status({ currentTime: 100, didJustFinish: true }));
+    h.emitStatus(status({ currentTime: 0 }));
+    h.finishSeek();
+    await restart;
+
+    expect(events).toEqual(["play", "ended"]);
+    expect(h.calls).toEqual(["seekTo", "play"]);
+  });
+
+  it("still reports a system pause just before the end", () => {
+    const { events } = setup();
+    h.emitStatus(playingStatus());
+    h.emitStatus(status({ currentTime: 99.9 }));
+    expect(events).toEqual(["play", "pause"]);
   });
 
   it("does not dispatch pause for the source swap in load()", () => {
