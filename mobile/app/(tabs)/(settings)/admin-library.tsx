@@ -13,9 +13,15 @@ import {
 } from "react-native";
 import { Stack, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import {
   api,
+  errorMessage,
   libraryChanged,
   type MusicRoot,
   type RescanStatus,
@@ -25,6 +31,50 @@ import { HeaderIconButton } from "../../../components/header-buttons";
 import { Card } from "../../../components/primitives";
 import { qk } from "../../../lib/query-keys";
 import { useTheme, type ThemeTokens } from "../../../theme/theme";
+
+const RESCAN_POLL_MS = 2000;
+const MAX_RESCAN_POLL_FAILURES = 5;
+
+const rescanStatusQuery = {
+  queryKey: qk.adminRescanStatus,
+  queryFn: ({ signal }: { signal: AbortSignal }) => api.rescanStatus({ signal }),
+  staleTime: 0,
+};
+
+let rescanWatch: Promise<void> | null = null;
+
+/**
+ * Polls the rescan status through the query cache until the scan is idle, then
+ * fires one library-wide refresh so other screens pull updated lists. It runs
+ * outside the screen so leaving Admin → Library mid-scan still refreshes, and
+ * it starts from a known scan rather than reacting to idle statuses, since
+ * every mount and focus fetch reports idle and would otherwise invalidate the
+ * whole library cache. One watcher at a time.
+ */
+function watchRescan(queryClient: QueryClient): void {
+  if (rescanWatch) return;
+  rescanWatch = (async () => {
+    let failures = 0;
+    for (;;) {
+      try {
+        const status = await queryClient.fetchQuery(rescanStatusQuery);
+        failures = 0;
+        if (!status.running) {
+          libraryChanged.emit();
+          return;
+        }
+      } catch {
+        // Give up on a status endpoint that keeps failing (signed out, lost
+        // admin, server gone) rather than poll it forever.
+        failures += 1;
+        if (failures >= MAX_RESCAN_POLL_FAILURES) return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, RESCAN_POLL_MS));
+    }
+  })().finally(() => {
+    rescanWatch = null;
+  });
+}
 
 export default function AdminLibraryScreen() {
   const theme = useTheme();
@@ -36,30 +86,21 @@ export default function AdminLibraryScreen() {
     queryFn: ({ signal }) => api.listMusicRoots({ signal }),
   });
 
-  const rescanQuery = useQuery({
-    queryKey: qk.adminRescanStatus,
-    queryFn: ({ signal }) => api.rescanStatus({ signal }),
-    staleTime: 0,
-    // Poll every 2s while rescanning so progress updates live.
-    refetchInterval: (q) =>
-      (q.state.data as RescanStatus | undefined)?.running ? 2000 : false,
-    refetchIntervalInBackground: false,
-  });
+  const rescanQuery = useQuery(rescanStatusQuery);
 
-  // Fire library-wide refresh events when a rescan finishes so other screens
-  // pull updated lists.
+  // A scan already running when the screen opens (started earlier, or from
+  // another client) gets watched to completion too. The watcher's polling is
+  // also what keeps the progress below live.
+  const rescanRunning = rescanQuery.data?.running === true;
   useEffect(() => {
-    if (!rescanQuery.data?.running && rescanQuery.dataUpdatedAt > 0) {
-      libraryChanged.emit();
-    }
-  }, [rescanQuery.data?.running, rescanQuery.dataUpdatedAt]);
+    if (rescanRunning) watchRescan(queryClient);
+  }, [queryClient, rescanRunning]);
 
   const startRescan = useMutation({
     mutationFn: () => api.startRescan(),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: qk.adminRescanStatus,
-      }),
+    onSuccess: () => watchRescan(queryClient),
+    onError: (error) =>
+      Alert.alert("Couldn't start rescan", errorMessage(error, "Please try again.")),
   });
 
   const toggleEnabled = useMutation({
@@ -69,6 +110,8 @@ export default function AdminLibraryScreen() {
       void queryClient.invalidateQueries({
         queryKey: qk.adminMusicRoots,
       }),
+    onError: (error) =>
+      Alert.alert("Couldn't update music root", errorMessage(error, "Please try again.")),
   });
 
   const deleteRoot = useMutation({
@@ -80,6 +123,8 @@ export default function AdminLibraryScreen() {
       });
       libraryChanged.emit();
     },
+    onError: (error) =>
+      Alert.alert("Couldn't remove music root", errorMessage(error, "Please try again.")),
   });
 
   const onDelete = (root: MusicRoot) => {
@@ -156,6 +201,16 @@ export default function AdminLibraryScreen() {
         ListEmptyComponent={
           rootsQuery.isLoading ? (
             <EmptyState loading />
+          ) : rootsQuery.isError ? (
+            <EmptyState
+              selectable
+              message="Couldn't load music roots."
+              action={{
+                label: rootsQuery.isFetching ? "Retrying…" : "Try again",
+                disabled: rootsQuery.isFetching,
+                onPress: () => void rootsQuery.refetch(),
+              }}
+            />
           ) : (
             <EmptyState
               selectable
