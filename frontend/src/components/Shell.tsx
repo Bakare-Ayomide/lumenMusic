@@ -10,7 +10,7 @@ import { useLyricsPanel } from "../context/LyricsPanel";
 import MiniPlayer from "./MiniPlayer";
 import LyricsSidebar from "./LyricsSidebar";
 import UploadDialog from "./UploadDialog";
-import TweaksPanel from "./TweaksPanel";
+import SettingsDialog from "./SettingsDialog";
 import Sidebar from "./shell/Sidebar";
 import Topbar from "./shell/Topbar";
 import { useMobileNav } from "./shell/useMobileNav";
@@ -57,11 +57,15 @@ export default function Shell() {
     "mod+k",
     (e) => {
       e.preventDefault();
+      // The palette layers below Settings; hand over instead of hiding behind it.
+      setTweaksOpen(false);
       setPaletteOpen((o) => !o);
     },
     {
       id: "palette:toggle",
       allowInInput: true,
+      // Settings hands over to the palette rather than blocking it.
+      whileModal: true,
     },
   );
   useKey(
@@ -122,7 +126,7 @@ export default function Shell() {
       {/* Player */}
       <MiniPlayer />
 
-      <TweaksPanel open={tweaksOpen} onClose={() => setTweaksOpen(false)} />
+      <SettingsDialog open={tweaksOpen} onClose={() => setTweaksOpen(false)} />
 
       <UploadDialog
         open={uploadOpen}
