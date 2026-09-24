@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   ExternalLink as ArrowTopRightOnSquareIcon,
+  Check as CheckIcon,
   ClipboardCopy as ClipboardDocumentIcon,
   Pause as PauseIcon,
   Play as PlayIcon,
@@ -139,79 +140,77 @@ export default function SharePreview() {
         {loading && <LoadingState className="share-preview-status" />}
 
         {!loading && error && (
-          <section className="share-preview-panel" aria-label="Shared track">
-            <div className="share-preview-copy">
-              <div className="share-preview-kicker mono">Shared track</div>
-              <h1>Preview unavailable</h1>
-              <ErrorBanner>{error}</ErrorBanner>
-              <Link className="btn" to="/">
+          <section className="share-preview-card" aria-label="Shared track">
+            <header className="share-preview-header">
+              <div className="eyebrow">Shared track</div>
+              <h1 className="share-preview-title">Preview unavailable</h1>
+            </header>
+            <ErrorBanner>{error}</ErrorBanner>
+            <footer className="share-preview-footer">
+              <Link className="btn btn-primary" to="/">
+                <ArrowTopRightOnSquareIcon className="size-4" />
                 Open Lumen
               </Link>
-            </div>
+            </footer>
           </section>
         )}
 
         {!loading && share && (
-          <section className="share-preview-panel" aria-label="Shared track">
-            <div className="share-preview-art-wrap">
-              <CoverArt
-                className="share-preview-art"
-                src={share.cover_url}
-                label={share.title}
-              />
-            </div>
+          <section className="share-preview-card" aria-label="Shared track">
+            <CoverArt
+              className="share-preview-art"
+              src={share.cover_url}
+              label={share.title}
+            />
 
-            <div className="share-preview-copy">
-              <div className="share-preview-kicker mono">Shared track</div>
-              <h1>{share.title}</h1>
-              <div className="share-preview-meta">
-                <span>{share.artist || "Unknown artist"}</span>
-                {share.album && (
-                  <>
-                    <span className="dot" />
-                    <span>{share.album}</span>
-                  </>
-                )}
+            <header className="share-preview-header">
+              <div className="eyebrow">
+                Shared track
+                {share.start_sec > 0 && ` · Starts at ${fmtDurationSec(share.start_sec)}`}
               </div>
+              <h1 className="share-preview-title">{share.title}</h1>
+              <p className="share-preview-meta">
+                {share.artist || "Unknown artist"}
+                {share.album && ` · ${share.album}`}
+              </p>
+            </header>
 
-              <div className="share-preview-player">
-                <button
-                  type="button"
-                  className="play-btn share-preview-play"
-                  aria-label={isPlaying ? "Pause preview" : "Play preview"}
-                  onClick={() => void togglePlay()}
-                >
-                  {isPlaying ? (
-                    <PauseIcon className="size-5" />
-                  ) : (
-                    <PlayIcon className="size-5" />
-                  )}
-                </button>
-                <div className="share-preview-progress">
-                  <div className="progress">
-                    <span className="progress-time">{fmtDurationSec(currentTime)}</span>
-                    <ShareSeekBar value={progress} onSeek={seek} />
-                    <span className="progress-time">{fmtDurationSec(duration)}</span>
-                  </div>
-                  <div className="share-preview-window mono">
-                    Starts at {fmtDurationSec(share.start_sec)}
-                  </div>
+            <div className="share-preview-player">
+              <button
+                type="button"
+                className="play-btn share-preview-play"
+                aria-label={isPlaying ? "Pause preview" : "Play preview"}
+                onClick={() => void togglePlay()}
+              >
+                {isPlaying ? (
+                  <PauseIcon className="size-4" fill="currentColor" />
+                ) : (
+                  <PlayIcon className="size-4" fill="currentColor" />
+                )}
+              </button>
+              <div className="share-preview-progress">
+                <ShareSeekBar value={progress} onSeek={seek} />
+                <div className="share-preview-times">
+                  <span>{fmtDurationSec(currentTime)}</span>
+                  <span>{fmtDurationSec(duration)}</span>
                 </div>
               </div>
-
-              <div className="share-preview-actions">
-                <a className="btn btn-primary" href={share.open_url}>
-                  <ArrowTopRightOnSquareIcon className="size-4" />
-                  Open Lumen
-                </a>
-                <Button
-                  onClick={() => void copy()}
-                  leadingIcon={<ClipboardDocumentIcon className="size-4" />}
-                >
-                  {copied ? "Copied" : "Copy link"}
-                </Button>
-              </div>
             </div>
+
+            <footer className="share-preview-footer">
+              <a className="btn btn-primary" href={share.open_url}>
+                <ArrowTopRightOnSquareIcon className="size-4" />
+                Open Lumen
+              </a>
+              <Button
+                onClick={() => void copy()}
+                leadingIcon={copied
+                  ? <CheckIcon className="size-4" />
+                  : <ClipboardDocumentIcon className="size-4" />}
+              >
+                {copied ? "Copied" : "Copy link"}
+              </Button>
+            </footer>
 
             <video
               ref={videoRef}
