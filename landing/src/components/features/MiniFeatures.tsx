@@ -1,20 +1,42 @@
 import clsx from "clsx";
 import { Check, FileAudio, Search, UploadCloud } from "lucide-react";
-import type { ReactNode } from "react";
-import { spotlight } from "../../lib/hooks";
+import { useEffect, useState, type ReactNode } from "react";
+import { spotlight, useAutoplay, useInView } from "../../lib/hooks";
 import { byId } from "../../lib/music";
 import CoverImg from "../CoverImg";
 import { DiscordIcon } from "../icons";
 import { delay } from "../ui";
 
 // Small tiles are still by default, and each one plays a single small step of
-// its feature on hover (fine pointers only, via Tailwind's hover variant).
-// Six more autoplaying loops next to the big demos would just be noise.
+// its feature on hover, via the `play:` variant. Touch screens can't hover, so
+// there a tile on screen plays its step and rewinds on a slow loop instead.
 const MOVE = "transition-[translate,opacity] duration-300 ease-[var(--ease-in-out)] motion-reduce:transition-none";
 
+const CAN_HOVER = window.matchMedia("(hover: hover)").matches;
+const PLAY_MS = 2200;
+
 function Tile({ title, line, children, stagger }: { title: string; line: string; children: ReactNode; stagger: number }) {
+  const [ref, inView] = useInView<HTMLElement>();
+  const autoplay = useAutoplay(inView) && !CAN_HOVER;
+  const [playing, setPlaying] = useState(false);
+
+  useEffect(() => {
+    if (!autoplay) return;
+    // First step lands once the scroll reveal has settled; the stagger keeps
+    // neighbouring tiles from flipping in lockstep.
+    let id = 0;
+    const flip = () => {
+      setPlaying((p) => !p);
+      id = window.setTimeout(flip, PLAY_MS);
+    };
+    id = window.setTimeout(flip, 700 + stagger * 4);
+    return () => window.clearTimeout(id);
+  }, [autoplay, stagger]);
+
   return (
     <article
+      ref={ref}
+      data-play={autoplay && playing ? "" : undefined}
       onPointerMove={spotlight}
       style={delay(stagger)}
       className="card-surface spotlight reveal group flex flex-col overflow-hidden rounded-2xl"
@@ -38,7 +60,7 @@ function Formats() {
       {FORMATS.map((f, i) => (
         <span
           key={f}
-          className="flex h-9 flex-col items-center justify-center rounded-md border border-border bg-background/70 font-mono text-[10px] font-medium transition-[translate,border-color] duration-200 ease-[var(--ease-out)] group-hover:-translate-y-0.5 group-hover:border-foreground/20 motion-reduce:group-hover:translate-y-0"
+          className="flex h-9 flex-col items-center justify-center rounded-md border border-border bg-background/70 font-mono text-[10px] font-medium transition-[translate,border-color] duration-200 ease-[var(--ease-out)] play:-translate-y-0.5 play:border-foreground/20 motion-reduce:play:translate-y-0"
           style={{ transitionDelay: `${i * 25}ms` }}
         >
           <FileAudio className="mb-0.5 size-3 text-muted-foreground" />
@@ -61,7 +83,7 @@ function Lyrics() {
   return (
     <div className="relative w-full max-w-64">
       {/* Current-line highlight moves down one line on hover. */}
-      <div className={clsx("absolute inset-x-0 top-7 h-7 rounded-md bg-brand-soft group-hover:translate-y-7", MOVE)} />
+      <div className={clsx("absolute inset-x-0 top-7 h-7 rounded-md bg-brand-soft play:translate-y-7", MOVE)} />
       {LYRIC_LINES.map((l, i) => (
         <div key={l.t} className="relative flex h-7 items-center gap-3 px-2">
           <span className="w-10 font-mono text-[10px] text-muted-foreground">{l.t}</span>
@@ -69,7 +91,7 @@ function Lyrics() {
             className={clsx(
               "h-2 rounded-full transition-colors duration-300",
               l.w,
-              i === 1 ? "bg-foreground group-hover:bg-foreground/20" : i === 2 ? "bg-foreground/20 group-hover:bg-foreground" : "bg-foreground/20",
+              i === 1 ? "bg-foreground play:bg-foreground/20" : i === 2 ? "bg-foreground/20 play:bg-foreground" : "bg-foreground/20",
             )}
           />
         </div>
@@ -93,7 +115,7 @@ function Scrobble() {
         <span className="grid h-5 items-center justify-items-end overflow-hidden text-[10px] font-medium">
           <span
             className={clsx(
-              "col-start-1 row-start-1 text-muted-foreground group-hover:-translate-y-5 group-hover:opacity-0",
+              "col-start-1 row-start-1 text-muted-foreground play:-translate-y-5 play:opacity-0",
               MOVE,
             )}
           >
@@ -101,7 +123,7 @@ function Scrobble() {
           </span>
           <span
             className={clsx(
-              "col-start-1 row-start-1 flex translate-y-5 items-center gap-1 opacity-0 group-hover:translate-y-0 group-hover:opacity-100",
+              "col-start-1 row-start-1 flex translate-y-5 items-center gap-1 opacity-0 play:translate-y-0 play:opacity-100",
               MOVE,
             )}
           >
@@ -113,8 +135,8 @@ function Scrobble() {
         <span>last.fm/user/example</span>
         <span className="tabular-nums">
           12,84<span className="inline-grid overflow-hidden align-bottom">
-            <span className={clsx("col-start-1 row-start-1 group-hover:-translate-y-full group-hover:opacity-0", MOVE)}>7</span>
-            <span className={clsx("col-start-1 row-start-1 translate-y-full opacity-0 group-hover:translate-y-0 group-hover:opacity-100", MOVE)}>8</span>
+            <span className={clsx("col-start-1 row-start-1 play:-translate-y-full play:opacity-0", MOVE)}>7</span>
+            <span className={clsx("col-start-1 row-start-1 translate-y-full opacity-0 play:translate-y-0 play:opacity-100", MOVE)}>8</span>
           </span>{" "}
           scrobbles
         </span>
@@ -138,7 +160,7 @@ function Presence() {
           <div className="mt-1.5 flex items-center gap-1.5 font-mono text-[9px] text-muted-foreground">
             <span>1:12</span>
             <span className="h-1 flex-1 overflow-hidden rounded-full bg-foreground/15">
-              <span className="block h-full w-full -translate-x-[62%] rounded-full bg-foreground transition-transform duration-[1200ms] ease-linear group-hover:-translate-x-[48%] motion-reduce:transition-none" />
+              <span className="block h-full w-full -translate-x-[62%] rounded-full bg-foreground transition-transform duration-[1200ms] ease-linear play:-translate-x-[48%] motion-reduce:transition-none" />
             </span>
             <span>3:08</span>
           </div>
@@ -164,7 +186,7 @@ function Palette() {
       </div>
       <div className="relative p-1">
         {/* Selection moves to the next result on hover, like pressing ↓. */}
-        <div className={clsx("absolute inset-x-1 top-1 h-9 rounded-md bg-accent group-hover:translate-y-9", MOVE)} />
+        <div className={clsx("absolute inset-x-1 top-1 h-9 rounded-md bg-accent play:translate-y-9", MOVE)} />
         {results.map(({ t, kind }) => (
           <div key={kind} className="relative flex h-9 items-center gap-2.5 px-2">
             <CoverImg src={t.cover} className={clsx("size-6", kind === "Artist" ? "rounded-full" : "rounded")} />
@@ -187,14 +209,14 @@ function Upload() {
           <UploadCloud className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{t.title}.flac</span>
           <span className="relative grid h-4 w-9 place-items-end overflow-hidden font-mono text-[10px] text-muted-foreground">
-            <span className={clsx("group-hover:-translate-y-4 group-hover:opacity-0", MOVE)}>64%</span>
-            <span className={clsx("absolute right-0 top-4 opacity-0 group-hover:-translate-y-4 group-hover:opacity-100", MOVE)}>
+            <span className={clsx("play:-translate-y-4 play:opacity-0", MOVE)}>64%</span>
+            <span className={clsx("absolute right-0 top-4 opacity-0 play:-translate-y-4 play:opacity-100", MOVE)}>
               <Check className="size-3 text-success" />
             </span>
           </span>
         </div>
         <div className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/15">
-          <div className="h-full w-full -translate-x-[36%] rounded-full bg-foreground transition-transform duration-700 ease-[var(--ease-out)] group-hover:translate-x-0 motion-reduce:transition-none" />
+          <div className="h-full w-full -translate-x-[36%] rounded-full bg-foreground transition-transform duration-700 ease-[var(--ease-out)] play:translate-x-0 motion-reduce:transition-none" />
         </div>
       </div>
       <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1 rounded-lg border border-border bg-background/70 px-2.5 py-2 text-[11px]">

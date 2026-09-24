@@ -1,6 +1,18 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+/* A mini-feature tile's step plays on hover where hover exists, and while the
+   tile has data-play, which it toggles itself on touch screens. */
+@custom-variant play {
+  @media (hover: hover) {
+    &:is(:where(.group):hover *) {
+      @slot;
+    }
+  }
+  &:is(:where(.group)[data-play] *) {
+    @slot;
+  }
+}
 
 /* ---------- Fonts (Geist, same files the app ships) ---------- */
 @font-face {
