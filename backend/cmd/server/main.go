@@ -29,6 +29,7 @@ import (
 	"github.com/githubesson/lumen/internal/safego"
 	"github.com/githubesson/lumen/internal/storage"
 	"github.com/githubesson/lumen/internal/tidal"
+	"github.com/githubesson/lumen/internal/tidaldl"
 	"github.com/githubesson/lumen/internal/users"
 )
 
@@ -126,6 +127,8 @@ func main() {
 		},
 		Logger: logger,
 	}
+	// Saved TIDAL copies only stand in for `tidal:` refs while playable.
+	libraryStore.PlayableRoots = ingestSvc.AllRoots
 	// Prime the configured paths so the first playback request needs no root
 	// query. Failed loads are logged by the provider and retried on next use.
 	ingestSvc.AllRoots(ctx)
@@ -203,6 +206,20 @@ func main() {
 		ScriptPath:   cfg.FilenDownloaderScript,
 	}
 	startWorker(func() { filenScanner.Run(ctx) })
+	tidalDownloadStore := tidaldl.NewStore(pool)
+	tidalDownloadWorker := &tidaldl.Worker{
+		Store:        tidalDownloadStore,
+		TIDAL:        tidalClient,
+		Ingest:       ingestSvc,
+		Library:      libraryStore,
+		Roots:        musicRootsStore,
+		PrimaryRoot:  cfg.MusicPath,
+		Logger:       logger,
+		PollInterval: cfg.TIDALDownloadPollInterval,
+		FileTimeout:  cfg.TIDALDownloadFileTimeout,
+		MinFreeBytes: cfg.TIDALDownloadMinFreeBytes,
+	}
+	startWorker(func() { tidalDownloadWorker.Run(ctx) })
 
 	handler := httpapi.NewRouter(httpapi.Deps{
 		DB:               pool,
@@ -223,6 +240,8 @@ func main() {
 		ArtistGridScan:   artistGridScanner,
 		Filen:            filenStore,
 		FilenScan:        filenScanner,
+		TIDALDownloads:   tidalDownloadStore,
+		TIDALDownload:    tidalDownloadWorker,
 		Preview:          previewBuilder,
 		MusicRoot:        cfg.MusicPath,
 		Background:       ctx,

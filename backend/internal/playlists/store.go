@@ -47,8 +47,10 @@ type Playlist struct {
 	Description string
 	Visibility  Visibility
 	IsSmart     bool
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// TIDALAutoDownload saves the playlist's TIDAL tracks into the library.
+	TIDALAutoDownload bool
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type Collaborator struct {
@@ -66,6 +68,9 @@ type TrackEntry struct {
 	TrackID  uuid.UUID
 	AddedBy  *uuid.UUID
 	AddedAt  time.Time
+	// TIDALOrigin is the TIDAL id an entry was saved from by auto-download;
+	// the entry falls back to that TIDAL track if the saved copy is deleted.
+	TIDALOrigin *string
 }
 
 type Store struct{ db *pgxpool.Pool }
@@ -82,9 +87,9 @@ func (s *Store) Create(ctx context.Context, ownerID uuid.UUID, name, description
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO playlists (owner_id, name, description, visibility)
 		VALUES ($1, $2, NULLIF($3, ''), $4)
-		RETURNING id, owner_id, name, COALESCE(description, ''), visibility, is_smart, created_at, updated_at`,
+		RETURNING id, owner_id, name, COALESCE(description, ''), visibility, is_smart, tidal_auto_download, created_at, updated_at`,
 		ownerID, name, description, visibility,
-	).Scan(&p.ID, &p.OwnerID, &p.Name, &p.Description, &p.Visibility, &p.IsSmart, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.OwnerID, &p.Name, &p.Description, &p.Visibility, &p.IsSmart, &p.TIDALAutoDownload, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		// Never hand back a half-scanned row alongside an error, matching
 		// library.Store.GetTrack.
@@ -96,9 +101,9 @@ func (s *Store) Create(ctx context.Context, ownerID uuid.UUID, name, description
 func (s *Store) Get(ctx context.Context, id uuid.UUID) (*Playlist, error) {
 	p := &Playlist{}
 	err := s.db.QueryRow(ctx, `
-		SELECT id, owner_id, name, COALESCE(description, ''), visibility, is_smart, created_at, updated_at
+		SELECT id, owner_id, name, COALESCE(description, ''), visibility, is_smart, tidal_auto_download, created_at, updated_at
 		FROM playlists WHERE id = $1`, id,
-	).Scan(&p.ID, &p.OwnerID, &p.Name, &p.Description, &p.Visibility, &p.IsSmart, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.OwnerID, &p.Name, &p.Description, &p.Visibility, &p.IsSmart, &p.TIDALAutoDownload, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -118,7 +123,7 @@ type PlaylistForUser struct {
 // playlist is collaborative.
 func (s *Store) ListForUser(ctx context.Context, userID uuid.UUID) ([]PlaylistForUser, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT p.id, p.owner_id, p.name, COALESCE(p.description, ''), p.visibility, p.is_smart, p.created_at, p.updated_at,
+		SELECT p.id, p.owner_id, p.name, COALESCE(p.description, ''), p.visibility, p.is_smart, p.tidal_auto_download, p.created_at, p.updated_at,
 		       CASE WHEN p.owner_id = $1 THEN 'owner' ELSE pc.role END
 		FROM playlists p
 		LEFT JOIN playlist_collaborators pc
@@ -136,7 +141,7 @@ func (s *Store) ListForUser(ctx context.Context, userID uuid.UUID) ([]PlaylistFo
 	var out []PlaylistForUser
 	for rows.Next() {
 		var p PlaylistForUser
-		if err := rows.Scan(&p.ID, &p.OwnerID, &p.Name, &p.Description, &p.Visibility, &p.IsSmart, &p.CreatedAt, &p.UpdatedAt, &p.EffectiveRole); err != nil {
+		if err := rows.Scan(&p.ID, &p.OwnerID, &p.Name, &p.Description, &p.Visibility, &p.IsSmart, &p.TIDALAutoDownload, &p.CreatedAt, &p.UpdatedAt, &p.EffectiveRole); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -164,6 +169,20 @@ func (s *Store) Update(ctx context.Context, id uuid.UUID, name, description stri
 		}
 		return nil
 	})
+}
+
+// SetTIDALAutoDownload turns TIDAL auto-download on or off. Admin-only,
+// enforced by the caller. It leaves updated_at alone: the playlist's contents
+// have not changed, and bumping it would reorder everyone's playlist list.
+func (s *Store) SetTIDALAutoDownload(ctx context.Context, id uuid.UUID, enabled bool) error {
+	tag, err := s.db.Exec(ctx, `UPDATE playlists SET tidal_auto_download = $2 WHERE id = $1`, id, enabled)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
@@ -294,8 +313,22 @@ func lockPlaylist(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
 
 // AddTracks appends trackIDs to the end of the playlist, preserving order.
 func (s *Store) AddTracks(ctx context.Context, id uuid.UUID, trackIDs []uuid.UUID, addedBy uuid.UUID) error {
+	return s.AddEntries(ctx, id, trackIDs, nil, addedBy)
+}
+
+// AddEntries is AddTracks with each entry's TIDAL origin ("" for none): the
+// TIDAL id a track added as `tidal:<id>` stands for when it resolved to the
+// library copy auto-download saved, so the entry can fall back to TIDAL if
+// that copy is deleted. origins is nil or parallel to trackIDs.
+func (s *Store) AddEntries(ctx context.Context, id uuid.UUID, trackIDs []uuid.UUID, origins []string, addedBy uuid.UUID) error {
 	if len(trackIDs) == 0 {
 		return nil
+	}
+	if origins == nil {
+		origins = make([]string, len(trackIDs))
+	}
+	if len(origins) != len(trackIDs) {
+		return errors.New("origins must match track ids")
 	}
 	return dbutil.WithTx(ctx, s.db, func(tx pgx.Tx) error {
 		if err := lockPlaylist(ctx, tx, id); err != nil {
@@ -312,10 +345,10 @@ func (s *Store) AddTracks(ctx context.Context, id uuid.UUID, trackIDs []uuid.UUI
 		// 1000 round-trips blocked every concurrent add/remove/reorder on that
 		// playlist for the duration, and could outlive the request deadline.
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO playlist_tracks (playlist_id, position, track_id, added_by)
-			SELECT $1, $2 + ord, t.tid, $4
-			FROM unnest($3::uuid[]) WITH ORDINALITY AS t(tid, ord)`,
-			id, maxPos, trackIDs, addedBy); err != nil {
+			INSERT INTO playlist_tracks (playlist_id, position, track_id, added_by, tidal_origin)
+			SELECT $1, $2 + ord, t.tid, $4, NULLIF(t.origin, '')
+			FROM unnest($3::uuid[], $5::text[]) WITH ORDINALITY AS t(tid, origin, ord)`,
+			id, maxPos, trackIDs, addedBy, origins); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, id); err != nil {
@@ -428,7 +461,7 @@ func (s *Store) ReplaceOrder(ctx context.Context, id, viewerID uuid.UUID, trackI
 			visibleEntries []TrackEntry
 		)
 		rows, err := tx.Query(ctx, `
-			SELECT pt.position, pt.track_id, pt.added_by, pt.added_at,
+			SELECT pt.position, pt.track_id, pt.added_by, pt.added_at, pt.tidal_origin,
 			       (t.owner_id IS NULL OR t.owner_id = $2) AS visible
 			FROM playlist_tracks pt
 			JOIN tracks t ON t.id = pt.track_id AND t.deleted_at IS NULL
@@ -441,7 +474,7 @@ func (s *Store) ReplaceOrder(ctx context.Context, id, viewerID uuid.UUID, trackI
 			var entry reorderEntry
 			if err := rows.Scan(
 				&entry.Position, &entry.TrackID, &entry.AddedBy, &entry.AddedAt,
-				&entry.visible,
+				&entry.TIDALOrigin, &entry.visible,
 			); err != nil {
 				rows.Close()
 				return err
@@ -477,7 +510,11 @@ func (s *Store) ReplaceOrder(ctx context.Context, id, viewerID uuid.UUID, trackI
 		// the adding user is removed).
 		addedByCol := make([]pgtype.UUID, len(allEntries))
 		addedAtCol := make([]time.Time, len(allEntries))
+		originCol := make([]pgtype.Text, len(allEntries))
 		for i, entry := range allEntries {
+			if entry.TIDALOrigin != nil {
+				originCol[i] = pgtype.Text{String: *entry.TIDALOrigin, Valid: true}
+			}
 			trackIDCol[i] = entry.TrackID
 			if entry.AddedBy != nil {
 				addedByCol[i] = pgtype.UUID{Bytes: *entry.AddedBy, Valid: true}
@@ -486,11 +523,11 @@ func (s *Store) ReplaceOrder(ctx context.Context, id, viewerID uuid.UUID, trackI
 		}
 		if len(allEntries) > 0 {
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO playlist_tracks (playlist_id, position, track_id, added_by, added_at)
-				SELECT $1, t.ord - 1, t.track_id, t.added_by, t.added_at
-				FROM unnest($2::uuid[], $3::uuid[], $4::timestamptz[])
-				     WITH ORDINALITY AS t(track_id, added_by, added_at, ord)`,
-				id, trackIDCol, addedByCol, addedAtCol); err != nil {
+				INSERT INTO playlist_tracks (playlist_id, position, track_id, added_by, added_at, tidal_origin)
+				SELECT $1, t.ord - 1, t.track_id, t.added_by, t.added_at, t.tidal_origin
+				FROM unnest($2::uuid[], $3::uuid[], $4::timestamptz[], $5::text[])
+				     WITH ORDINALITY AS t(track_id, added_by, added_at, tidal_origin, ord)`,
+				id, trackIDCol, addedByCol, addedAtCol, originCol); err != nil {
 				return err
 			}
 		}

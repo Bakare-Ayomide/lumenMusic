@@ -376,6 +376,46 @@ func (c *Client) FileResponse(ctx context.Context, id string, incoming *http.Req
 	slog.Debug("tidal hifi file resolved", "track", id, "url", logSafeURL(streamURL))
 	return c.assembleHLSFile(ctx, streamURL)
 }
+
+const maxCoverBytes = 10 << 20
+
+// CoverBytes downloads cover art from TIDAL's image CDN for embedding.
+func (c *Client) CoverBytes(ctx context.Context, coverURL string) ([]byte, error) {
+	if err := validateTIDALMediaURL(coverURL); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, coverURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", httpx.BrowserUserAgent)
+	req.Header.Set("Accept", "image/*")
+	resp, err := tidalMediaClient(c.stream).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("cover fetch status %s", resp.Status)
+	}
+	return readCapped(resp.Body, maxCoverBytes)
+}
+
+// errCoverTooLarge rejects a cover past maxCoverBytes rather than returning a
+// truncated image, which ffmpeg could refuse and fail the whole download on.
+var errCoverTooLarge = errors.New("tidal cover exceeds size limit")
+
+func readCapped(r io.Reader, max int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > max {
+		return nil, errCoverTooLarge
+	}
+	return b, nil
+}
+
 func (c *Client) StreamURL(ctx context.Context, id string) (string, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
