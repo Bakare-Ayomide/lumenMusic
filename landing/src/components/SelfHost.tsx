@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import {
   Check,
+  ChevronDown,
   Copy,
   Database,
   FolderOpen,
@@ -10,9 +11,10 @@ import {
   Link2,
   Lock,
   Server,
+  ShieldCheck,
   Smartphone,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useCopy, useInView, usePrefersReducedMotion } from "../lib/hooks";
 import { INSTALL_STEPS, README_URL } from "../lib/site";
 import IconSwap from "./IconSwap";
@@ -322,6 +324,64 @@ const SECURITY = [
   { icon: Server, text: "Binds to 127.0.0.1 by default" },
 ];
 
+function SecurityIcon({ icon: I }: { icon: typeof Globe }) {
+  return (
+    <span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted">
+      <I className="size-3.5" />
+    </span>
+  );
+}
+
+/** Phones get the security list folded into one card; four stacked cards
+ *  there were a long scroll for a footnote. */
+function SecurityDisclosure() {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <div className="card-surface rounded-xl sm:hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-controls={id}
+        className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-[13px] font-medium"
+      >
+        <SecurityIcon icon={ShieldCheck} />
+        <span className="flex-1">Secure by default</span>
+        <ChevronDown
+          className={clsx(
+            "size-4 text-muted-foreground transition-transform duration-200 ease-[var(--ease-out)]",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+      <div
+        id={id}
+        className={clsx(
+          "grid transition-[grid-template-rows] duration-300 ease-[var(--ease-out)] motion-reduce:transition-none",
+          open ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+        )}
+      >
+        <div className="min-h-0 overflow-hidden" inert={open ? undefined : ""}>
+          <ul
+            className={clsx(
+              "border-t border-border px-4 py-2 transition-[opacity,translate] ease-[var(--ease-out)]",
+              open ? "opacity-100 duration-300" : "-translate-y-1 opacity-0 duration-150",
+            )}
+          >
+            {SECURITY.map(({ icon, text }) => (
+              <li key={text} className="flex items-center gap-3 py-1.5 text-[13px]">
+                <SecurityIcon icon={icon} />
+                {text}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SelfHost() {
   return (
     <section id="self-host" className="relative border-t border-border bg-sidebar/40 py-28">
@@ -335,16 +395,17 @@ export default function SelfHost() {
           <div className="reveal grid min-w-0" style={delay(100)}>
             <Architecture />
           </div>
-          <ul className="reveal grid gap-4 sm:grid-cols-2 lg:col-span-2 lg:grid-cols-4" style={delay(160)}>
-            {SECURITY.map(({ icon: I, text }) => (
-              <li key={text} className="card-surface flex items-center gap-3 rounded-xl px-4 py-3.5 text-[13px]">
-                <span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted">
-                  <I className="size-3.5" />
-                </span>
-                {text}
-              </li>
-            ))}
-          </ul>
+          <div className="reveal lg:col-span-2" style={delay(160)}>
+            <SecurityDisclosure />
+            <ul className="hidden gap-4 sm:grid sm:grid-cols-2 lg:grid-cols-4">
+              {SECURITY.map(({ icon, text }) => (
+                <li key={text} className="card-surface flex items-center gap-3 rounded-xl px-4 py-3.5 text-[13px]">
+                  <SecurityIcon icon={icon} />
+                  {text}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
 
         <div className="reveal mt-10 flex justify-center">

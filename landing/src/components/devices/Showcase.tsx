@@ -1,3 +1,4 @@
+import { useMediaQuery } from "../../lib/hooks";
 import Iphone, { IPHONE_SCREEN } from "./Iphone";
 import Macbook, { MACBOOK_SCREEN, MACBOOK_VIEWBOX } from "./Macbook";
 
@@ -142,19 +143,39 @@ function DesktopWindow() {
   );
 }
 
-function PhoneScreen() {
+function PhoneScreen({ sizes }: { sizes: string }) {
   const img = "absolute inset-0 size-full object-cover object-top";
   return (
     <>
-      <Shot name="mobile-light" sizes={PHONE_SIZES} className={`${img} ${LIGHT_ONLY}`} />
-      <Shot name="mobile-dark" sizes={PHONE_SIZES} className={`${img} ${DARK_ONLY}`} />
+      <Shot name="mobile-light" sizes={sizes} className={`${img} ${LIGHT_ONLY}`} />
+      <Shot name="mobile-dark" sizes={sizes} className={`${img} ${DARK_ONLY}`} />
     </>
+  );
+}
+
+// On phones the iPhone stands alone: next to the laptop it's too small to
+// read. Its width, and the screenshot's share of it, drive `sizes`.
+const SOLO_W = "min(280px, (100vw - 40px) * 0.72)";
+const SOLO_SIZES = `calc(${SOLO_W} * ${(IPHONE_SCREEN.width / 440).toFixed(4)})`;
+
+function PhoneOnly() {
+  return (
+    <Iphone
+      className="relative mx-auto drop-shadow-[0_30px_40px_rgb(0_0_0/0.45)]"
+      style={{ width: `calc(${SOLO_W})`, aspectRatio: "440 / 900" }}
+    >
+      <PhoneScreen sizes={SOLO_SIZES} />
+    </Iphone>
   );
 }
 
 // No 3D tilt or scale transforms here: the screenshots must be drawn 1:1 from
 // a variant close to their display size, or small text breaks up.
 export default function Showcase() {
+  // Rendered, not just hidden, per breakpoint, so phones don't download the
+  // desktop screenshots. Matches Tailwind's `sm`.
+  const wide = useMediaQuery("(min-width: 40rem)");
+  if (!wide) return <PhoneOnly />;
   return (
     <div className="relative w-full" style={{ aspectRatio: `${STAGE_W} / ${STAGE_H}` }}>
       {/* Contact shadow under the laptop */}
@@ -170,7 +191,7 @@ export default function Showcase() {
         className="absolute bottom-0 right-[0.2%] drop-shadow-[0_30px_40px_rgb(0_0_0/0.45)]"
         style={{ width: `${(PHONE_W / STAGE_W) * 100}%`, height: `${(PHONE_H / STAGE_H) * 100}%` }}
       >
-        <PhoneScreen />
+        <PhoneScreen sizes={PHONE_SIZES} />
       </Iphone>
     </div>
   );

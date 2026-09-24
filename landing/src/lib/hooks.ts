@@ -29,6 +29,19 @@ export function useTheme() {
   return { theme, toggle };
 }
 
+/** Live result of a CSS media query. */
+export function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = () => setMatches(mq.matches);
+    onChange();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
 /** Live prefers-reduced-motion. `onReduce` runs when the preference is
  *  switched on after mount, so a demo can jump to its finished state (and
  *  stay there if the preference is later switched off again). */
