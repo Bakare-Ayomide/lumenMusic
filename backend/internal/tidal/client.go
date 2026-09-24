@@ -20,7 +20,12 @@ import (
 )
 
 var (
-	ErrNotConfigured   = errors.New("tidal proxy is not configured")
+	ErrNotConfigured = errors.New("tidal proxy is not configured")
+	// ErrIncompleteAlbum reports that FullAlbum had to stop paging early (a
+	// proxy repeating pages, or the page cap) with tracks still missing. A
+	// partial listing must not be stored as the release, or the merge would
+	// mark the missing tracks removed.
+	ErrIncompleteAlbum = errors.New("tidal album listing is incomplete")
 	ErrDASHManifest    = errors.New("tidal returned a DASH manifest, which this proxy does not yet transcode")
 	ErrPreviewManifest = errors.New("tidal returned a preview manifest instead of full playback")
 )
@@ -116,18 +121,29 @@ type Track struct {
 	AlbumArtist string
 	CoverID     string
 	CoverURL    string
+	// Removed marks a cached release entry TIDAL no longer lists; it can't
+	// be streamed, but its metadata is kept.
+	Removed bool
 }
 
 type Album struct {
 	ID          string
 	Title       string
-	Artist      string
+	Artist      string   // primary artist
+	Artists     []string // every main artist, primary first
 	ReleaseYear int
 	TrackCount  int
 	DurationMS  int
 	CoverID     string
 	CoverURL    string
 	Tracks      []Track
+
+	// pageItems is how many raw items this page held, including ones
+	// filtered out of Tracks (videos, incomplete entries): the offset step
+	// for the next page. incompleteItems counts tracks dropped for missing
+	// an id or title, which makes the listing incomplete.
+	pageItems       int
+	incompleteItems int
 }
 
 func (t Track) Metadata() map[string]any {
@@ -213,6 +229,77 @@ func (c *Client) Album(ctx context.Context, id string, limit, offset int) (Album
 		return Album{}, errors.New("hifi-api album response did not include an album")
 	}
 	slog.Debug("tidal hifi album response", "album", id, "title", album.Title, "tracks", len(album.Tracks), "version", out.Version)
+	return album, nil
+}
+
+// maxFullAlbumTracks and maxFullAlbumPages bound FullAlbum's paging; no
+// real release comes close.
+const (
+	maxFullAlbumTracks = 1000
+	maxFullAlbumPages  = 20
+)
+
+// FullAlbum is Album with every page of the track list. Pages advance by the
+// raw item count, not the tracks kept from them, so filtered items (videos)
+// can't make pages overlap; a track listed twice is kept once.
+func (c *Client) FullAlbum(ctx context.Context, id string) (Album, error) {
+	const page = 100
+	album, err := c.Album(ctx, id, page, 0)
+	if err != nil {
+		return Album{}, err
+	}
+	seen := map[string]bool{}
+	tracks := make([]Track, 0, len(album.Tracks))
+	keep := func(ts []Track) (added int) {
+		for _, t := range ts {
+			if !seen[t.ID] {
+				seen[t.ID] = true
+				tracks = append(tracks, t)
+				added++
+			}
+		}
+		return added
+	}
+	keep(album.Tracks)
+	incomplete := album.incompleteItems
+	offset, got := album.pageItems, album.pageItems
+	// Keep going while pages come back full, or short (a proxy may cap the
+	// page size) while tracks are still missing.
+	cutShort := false
+	for pages := 1; got > 0 && (got >= page || len(tracks) < album.TrackCount) &&
+		len(tracks) < maxFullAlbumTracks; pages++ {
+		if pages >= maxFullAlbumPages {
+			cutShort = true
+			break
+		}
+		next, err := c.Album(ctx, id, page, offset)
+		if err != nil {
+			return Album{}, err
+		}
+		got = next.pageItems
+		offset += got
+		incomplete += next.incompleteItems
+		// A page of tracks we've all seen means the proxy is repeating
+		// itself (e.g. ignoring offset); there's nothing more to get.
+		if keep(next.Tracks) == 0 && len(next.Tracks) > 0 {
+			cutShort = true
+			break
+		}
+	}
+	// Running out of items is TIDAL's actual listing, even if shorter than
+	// its count; stopping early (repeats, a cap) with tracks missing is not.
+	if len(tracks) >= maxFullAlbumTracks {
+		cutShort = true
+	}
+	if cutShort && len(tracks) < album.TrackCount {
+		return Album{}, ErrIncompleteAlbum
+	}
+	// A track TIDAL listed without its title (a transient glitch) would read
+	// as removed if this listing were stored.
+	if incomplete > 0 {
+		return Album{}, ErrIncompleteAlbum
+	}
+	album.Tracks = tracks
 	return album, nil
 }
 
@@ -608,12 +695,14 @@ func (a apiAlbum) album() Album {
 		ID:          string(a.ID),
 		Title:       a.Title,
 		Artist:      artist,
+		Artists:     albumArtists(artist, a.Artists),
 		ReleaseYear: year,
 		TrackCount:  a.NumberOfTracks,
 		DurationMS:  max(0, a.Duration) * 1000,
 		CoverID:     coverID,
 		CoverURL:    CoverURL(coverID, 640),
 		Tracks:      make([]Track, 0, len(a.Items)),
+		pageItems:   len(a.Items),
 	}
 	for _, item := range a.Items {
 		if item.Type != "" && !strings.EqualFold(item.Type, "track") {
@@ -621,6 +710,7 @@ func (a apiAlbum) album() Album {
 		}
 		track := item.Item.track()
 		if track.ID == "" || track.Title == "" {
+			album.incompleteItems++
 			continue
 		}
 		if track.AlbumID == "" {
@@ -642,6 +732,24 @@ func (a apiAlbum) album() Album {
 		album.TrackCount = len(album.Tracks)
 	}
 	return album
+}
+
+func albumArtists(primary string, all []apiArtist) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[strings.ToLower(name)] {
+			return
+		}
+		seen[strings.ToLower(name)] = true
+		out = append(out, name)
+	}
+	add(primary)
+	for _, a := range all {
+		add(a.Name)
+	}
+	return out
 }
 
 func (t apiTrack) track() Track {

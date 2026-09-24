@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -610,5 +611,86 @@ func TestFileResponseFMP4InitSegment(t *testing.T) {
 	// start with "moof" instead of the ftyp header.
 	if !bytes.HasPrefix(body, initBytes) {
 		t.Fatalf("body does not start with init segment (ftyp)")
+	}
+}
+
+func TestFullAlbumPagesByRawItems(t *testing.T) {
+	// The proxy serves two items per page whatever the limit, and the first
+	// page holds a video, which Album filters out.
+	items := []string{
+		`{"type":"track","item":{"id":1,"title":"One","trackNumber":1}}`,
+		`{"type":"video","item":{"id":90,"title":"Clip"}}`,
+		`{"type":"track","item":{"id":2,"title":"Two","trackNumber":2}}`,
+		`{"type":"track","item":{"id":3,"title":"Three","trackNumber":3}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		page := []string{}
+		for i := offset; i < len(items) && i < offset+2; i++ {
+			page = append(page, items[i])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"id":7,"title":"Record","numberOfTracks":3,"items":[` + strings.Join(page, ",") + `]}}`))
+	}))
+	defer srv.Close()
+
+	album, err := NewClient(Config{HifiAPIURL: srv.URL}).FullAlbum(context.Background(), "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, tr := range album.Tracks {
+		ids = append(ids, tr.ID)
+	}
+	if strings.Join(ids, ",") != "1,2,3" {
+		t.Fatalf("tracks = %v, want 1,2,3", ids)
+	}
+}
+
+func TestFullAlbumStopsWhenAProxyRepeatsItself(t *testing.T) {
+	requests := 0
+	// Ignores offset: always the same full page of 100, claiming 150 tracks.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		items := make([]string, 100)
+		for i := range items {
+			items[i] = `{"type":"track","item":{"id":` + strconv.Itoa(i+1) + `,"title":"T"}}`
+		}
+		_, _ = w.Write([]byte(`{"data":{"id":7,"title":"Loop","numberOfTracks":150,"items":[` + strings.Join(items, ",") + `]}}`))
+	}))
+	defer srv.Close()
+
+	_, err := NewClient(Config{HifiAPIURL: srv.URL}).FullAlbum(context.Background(), "7")
+	// 100 of 150 tracks is not the release: it must not be stored as one.
+	if !errors.Is(err, ErrIncompleteAlbum) || requests > 2 {
+		t.Fatalf("err = %v after %d requests, want ErrIncompleteAlbum", err, requests)
+	}
+}
+
+func TestFullAlbumTrackCapIsIncomplete(t *testing.T) {
+	// 1500 distinct tracks, 100 per page: more than FullAlbum will hold.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		items := []string{}
+		for i := offset; i < 1500 && i < offset+100; i++ {
+			items = append(items, `{"type":"track","item":{"id":`+strconv.Itoa(i+1)+`,"title":"T"}}`)
+		}
+		_, _ = w.Write([]byte(`{"data":{"id":7,"title":"Huge","numberOfTracks":1500,"items":[` + strings.Join(items, ",") + `]}}`))
+	}))
+	defer srv.Close()
+
+	if _, err := NewClient(Config{HifiAPIURL: srv.URL}).FullAlbum(context.Background(), "7"); !errors.Is(err, ErrIncompleteAlbum) {
+		t.Fatalf("err = %v, want ErrIncompleteAlbum", err)
+	}
+}
+
+func TestFullAlbumWithTitlelessTrackIsIncomplete(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"id":7,"title":"R","numberOfTracks":2,"items":[` +
+			`{"type":"track","item":{"id":1,"title":"One"}},{"type":"track","item":{"id":2,"title":""}}]}}`))
+	}))
+	defer srv.Close()
+	if _, err := NewClient(Config{HifiAPIURL: srv.URL}).FullAlbum(context.Background(), "7"); !errors.Is(err, ErrIncompleteAlbum) {
+		t.Fatalf("err = %v, want ErrIncompleteAlbum", err)
 	}
 }

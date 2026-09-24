@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,8 +16,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/githubesson/lumen/internal/db"
@@ -29,10 +26,12 @@ import (
 	"github.com/githubesson/lumen/internal/musicroots"
 	"github.com/githubesson/lumen/internal/playlists"
 	"github.com/githubesson/lumen/internal/storage"
+	"github.com/githubesson/lumen/internal/testdb"
 	"github.com/githubesson/lumen/internal/tidal"
 )
 
 type fakeSource struct {
+	albums  map[string]tidal.Album
 	tracks  map[string]tidal.Track
 	errs    map[string]error
 	onTrack func(id string)
@@ -47,6 +46,14 @@ func (f *fakeSource) Track(_ context.Context, id string) (tidal.Track, error) {
 		return tidal.Track{}, err
 	}
 	return f.tracks[id], nil
+}
+
+func (f *fakeSource) FullAlbum(_ context.Context, id string) (tidal.Album, error) {
+	a, ok := f.albums[id]
+	if !ok {
+		return tidal.Album{}, errors.New("album not found")
+	}
+	return a, nil
 }
 
 func (f *fakeSource) FileResponse(context.Context, string, *http.Request) (*http.Response, error) {
@@ -167,30 +174,17 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// ownDatabase returns a sibling database for this package's tests. `go test
-// ./...` runs packages in parallel, and these tests add shared library tracks
-// that other packages' tests (which count visible tracks) would see.
+// ownDatabase returns a sibling database for this package's tests: they add
+// shared library tracks that other packages' tests (which count visible
+// tracks) would see.
 func ownDatabase(t *testing.T, base string) string {
 	t.Helper()
-	u, err := url.Parse(base)
+	own, err := testdb.Sibling(context.Background(), base, "_tidaldl")
 	if err != nil {
-		t.Fatal(err)
-	}
-	name := strings.TrimPrefix(u.Path, "/") + "_tidaldl"
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close(ctx)
-	_, err = conn.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize())
-	var pgErr *pgconn.PgError
-	if err != nil && !(errors.As(err, &pgErr) && pgErr.Code == "42P04") { // duplicate_database
-		t.Logf("using the shared test database; could not create %s: %v", name, err)
+		t.Logf("using the shared test database: %v", err)
 		return base
 	}
-	u.Path = "/" + name
-	return u.String()
+	return own
 }
 
 func TestDrainSavesTIDALTracksAndRepointsPlaylists(t *testing.T) {
@@ -682,10 +676,11 @@ func TestDrainSkipsUnplayableLocalCopies(t *testing.T) {
 			Roots: func(context.Context) []string { return []string{root, libRoot} },
 		},
 		source: &fakeSource{tracks: map[string]tidal.Track{
-			mixedID:    {ID: mixedID, Title: "Mixed " + run, ISRC: mixedISRC},
-			missingID:  {ID: missingID, Title: "Missing " + run, ISRC: missingISRC},
-			staleID:    {ID: staleID, Title: "Stale " + run},
-			deadTwinID: {ID: deadTwinID, Title: "Dead twin " + run},
+			mixedID:   {ID: mixedID, Title: "Mixed " + run, ISRC: mixedISRC},
+			missingID: {ID: missingID, Title: "Missing " + run, ISRC: missingISRC},
+			staleID:   {ID: staleID, Title: "Stale " + run},
+			deadTwinID: {ID: deadTwinID, Title: "Dead twin " + run, Artists: []string{"Twin Artist " + run},
+				AlbumTitle: "Twin Album " + run, AlbumArtist: "Twin Artist " + run},
 			liveTwinID: {ID: liveTwinID, Title: "Live twin " + run},
 		}},
 		tag: wavTaggerWith(t, map[string][]byte{"Dead twin " + run: deadAudio, "Live twin " + run: liveAudio}),
@@ -715,6 +710,18 @@ func TestDrainSkipsUnplayableLocalCopies(t *testing.T) {
 	}
 	if _, err := os.Stat(outsidePath); err != nil {
 		t.Fatalf("the old file outside the roots should be left alone: %v", err)
+	}
+	// It now plays the TIDAL download, so it is filed by TIDAL's metadata.
+	var twinArtist, twinAlbum string
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE((SELECT ar.name FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id
+		                 WHERE ta.track_id = t.id ORDER BY ta.position LIMIT 1), ''),
+		       COALESCE(a.title, '')
+		FROM tracks t LEFT JOIN albums a ON a.id = t.album_id WHERE t.id = $1`, deadTwin).Scan(&twinArtist, &twinAlbum); err != nil {
+		t.Fatal(err)
+	}
+	if twinArtist != "Twin Artist "+run || twinAlbum != "Twin Album "+run {
+		t.Fatalf("repointed twin filed as %q / %q", twinArtist, twinAlbum)
 	}
 	// The live twin is reused, and the duplicate download discarded.
 	if got, err := lib.DownloadedTIDALTrack(ctx, liveTwinID); err != nil || got != liveTwin {
@@ -1196,5 +1203,285 @@ func TestSharedDownloadedCopyDoesNotMisattributeHistory(t *testing.T) {
 		if err := pool.QueryRow(ctx, `SELECT track_id FROM playlist_tracks WHERE playlist_id = $1`, pl).Scan(&entry); err != nil || entry != want {
 			t.Fatalf("playlist %v entry = %v, %v; want its own TIDAL track %v", pl, entry, err, want)
 		}
+	}
+}
+
+// TIDAL's track info has no album artist or release date. A saved track is
+// filed under its release with both, the release is cached in full, and the
+// library album is linked to it.
+func TestDownloadIsFiledUnderItsTIDALRelease(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	run := uuid.NewString()[:8]
+	tid, rel := "al"+run, "rel"+run
+	optedInPlaylist(t, pool, tid)
+	root := t.TempDir()
+	t.Cleanup(func() { pool.Exec(context.Background(), `DELETE FROM tracks WHERE file_path LIKE $1`, root+"%") })
+	release := tidal.Album{
+		ID: rel, Title: "Record " + run, Artist: "Band " + run, Artists: []string{"Band " + run, "Guest " + run},
+		ReleaseYear: 2021, TrackCount: 3, DurationMS: 9000,
+		Tracks: []tidal.Track{
+			{ID: "x1" + run, Title: "Intro", TrackNo: 1, DiscNo: 1, DurationMS: 3000},
+			{ID: tid, Title: "Song " + run, TrackNo: 2, DiscNo: 1, DurationMS: 3000},
+			{ID: "x3" + run, Title: "Outro", TrackNo: 3, DiscNo: 1, DurationMS: 3000},
+		},
+	}
+	w := testWorker(t, pool, root, &fakeSource{
+		albums: map[string]tidal.Album{rel: release},
+		// What /info/ returns: album id and title only.
+		tracks: map[string]tidal.Track{tid: {ID: tid, Title: "Song " + run, Artists: []string{"Band " + run}, AlbumID: rel, AlbumTitle: "Record " + run}},
+	})
+	w.drain(ctx)
+
+	local, err := w.Library.DownloadedTIDALTrack(ctx, tid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		albumTitle, albumArtist, linked string
+		year, trackNo                   int
+	)
+	if err := pool.QueryRow(ctx, `
+		SELECT a.title, COALESCE(ar.name, ''), COALESCE(a.release_year, 0), COALESCE(a.tidal_album_id, ''), COALESCE(t.track_no, 0)
+		FROM tracks t JOIN albums a ON a.id = t.album_id LEFT JOIN artists ar ON ar.id = a.album_artist_id
+		WHERE t.id = $1`, local).Scan(&albumTitle, &albumArtist, &year, &linked, &trackNo); err != nil {
+		t.Fatal(err)
+	}
+	if albumTitle != "Record "+run || albumArtist != "Band "+run || year != 2021 || linked != rel || trackNo != 2 {
+		t.Fatalf("filed as %q by %q (%d), link %q, track %d", albumTitle, albumArtist, year, linked, trackNo)
+	}
+	cached, _, err := w.Library.TIDALAlbum(ctx, rel)
+	if err != nil || len(cached.Tracks) != 3 || len(cached.Artists) != 2 || cached.ReleaseYear != 2021 {
+		t.Fatalf("cached release = %+v, %v", cached, err)
+	}
+	var marker string
+	if err := pool.QueryRow(ctx, `SELECT tidal_album_id FROM tidal_downloads WHERE tidal_id = $1`, tid).Scan(&marker); err != nil || marker != rel {
+		t.Fatalf("download album marker = %q, %v", marker, err)
+	}
+}
+
+// Tracks saved before album metadata was applied sit in an album with no
+// artist or year; the worker refiles them, keeping the album's cover.
+func TestBackfillRefilesOlderDownloads(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	run := uuid.NewString()[:8]
+	tid, rel := "bf"+run, "brel"+run
+	_, libPath := libraryFile(t)
+	oldAlbum, local := uuid.New(), uuid.New()
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO albums(id, title, cover_art_path) VALUES($1, $2, 'covers/old.jpg')`, []any{oldAlbum, "FF " + run}},
+		{`INSERT INTO tracks(id, album_id, title, duration_ms, file_path, file_size, format, audio_sha256)
+		  VALUES($1, $2, 'Song', 1000, $3, 5, 'flac', $4)`, []any{local, oldAlbum, libPath, local[:]}},
+		{`INSERT INTO tidal_downloads(tidal_id, status, local_track_id) VALUES($1, 'downloaded', $2)`, []any{tid, local}},
+	} {
+		if _, err := pool.Exec(ctx, q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		pool.Exec(c, `DELETE FROM tidal_downloads WHERE tidal_id = $1`, tid)
+		pool.Exec(c, `DELETE FROM tracks WHERE id = $1`, local)
+	})
+	w := testWorker(t, pool, t.TempDir(), &fakeSource{
+		albums: map[string]tidal.Album{rel: {ID: rel, Title: "FF " + run, Artist: "Rapper " + run, ReleaseYear: 2024,
+			TrackCount: 1, Tracks: []tidal.Track{{ID: tid, Title: "Song", TrackNo: 5, DiscNo: 1}}}},
+		tracks: map[string]tidal.Track{tid: {ID: tid, Title: "Song", AlbumID: rel, AlbumTitle: "FF " + run}},
+	})
+	w.drain(ctx)
+
+	var (
+		albumID               uuid.UUID
+		artist, linked, cover string
+		year, trackNo         int
+	)
+	if err := pool.QueryRow(ctx, `
+		SELECT a.id, COALESCE(ar.name, ''), COALESCE(a.tidal_album_id, ''), COALESCE(a.cover_art_path, ''),
+		       COALESCE(a.release_year, 0), COALESCE(t.track_no, 0)
+		FROM tracks t JOIN albums a ON a.id = t.album_id LEFT JOIN artists ar ON ar.id = a.album_artist_id
+		WHERE t.id = $1`, local).Scan(&albumID, &artist, &linked, &cover, &year, &trackNo); err != nil {
+		t.Fatal(err)
+	}
+	if albumID == oldAlbum || artist != "Rapper "+run || linked != rel || cover != "covers/old.jpg" || year != 2024 || trackNo != 5 {
+		t.Fatalf("refiled into %v by %q, link %q, cover %q, year %d, track %d", albumID, artist, linked, cover, year, trackNo)
+	}
+	var marker string
+	if err := pool.QueryRow(ctx, `SELECT tidal_album_id FROM tidal_downloads WHERE tidal_id = $1`, tid).Scan(&marker); err != nil || marker != rel {
+		t.Fatalf("marker = %q, %v", marker, err)
+	}
+}
+
+// An album download queues tracks outside any playlist. Each request is
+// one-shot: cleared once the track is saved, kept (with backoff) on failure,
+// and cancellable.
+func TestRequestedAlbumTracksAreSaved(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	run := uuid.NewString()[:8]
+	rel, good, bad := "rq"+run, "rg"+run, "rb"+run
+	root := t.TempDir()
+	lib := library.NewStore(pool)
+	t.Cleanup(func() {
+		c := context.Background()
+		pool.Exec(c, `DELETE FROM tidal_download_requests WHERE tidal_album_id = $1`, rel)
+		pool.Exec(c, `DELETE FROM tidal_downloads WHERE tidal_id = ANY($1)`, []string{good, bad})
+		pool.Exec(c, `DELETE FROM tracks WHERE external_id = ANY($1) OR file_path LIKE $2`, []string{good, bad}, root+"%")
+	})
+	for _, tid := range []string{good, bad} {
+		if _, err := lib.UpsertRemoteTrack(ctx, library.RemoteTrackInput{
+			Source: "tidal", ExternalID: tid, Title: "Remote " + tid, ArtistNames: []string{"Band"}, DurationMS: 1000,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := NewStore(pool)
+	if n, err := store.RequestTracks(ctx, rel, []string{good, bad}, uuid.Nil); err != nil || n != 2 {
+		t.Fatalf("queued %d, %v", n, err)
+	}
+	if n, _ := store.RequestTracks(ctx, rel, []string{good}, uuid.Nil); n != 0 {
+		t.Fatal("re-queued an already queued track")
+	}
+	if q, err := lib.TIDALAlbumQueued(ctx, rel); err != nil || q != 2 {
+		t.Fatalf("album queued = %d, %v", q, err)
+	}
+
+	w := testWorker(t, pool, root, &fakeSource{
+		tracks: map[string]tidal.Track{good: {ID: good, Title: "Good " + run}},
+		errs:   map[string]error{bad: errors.New("upstream 500")},
+	})
+	w.drain(ctx)
+
+	if _, err := w.Library.DownloadedTIDALTrack(ctx, good); err != nil {
+		t.Fatalf("requested track not saved: %v", err)
+	}
+	var left []string
+	rows, err := pool.Query(ctx, `SELECT tidal_id FROM tidal_download_requests WHERE tidal_album_id = $1`, rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		_ = rows.Scan(&id)
+		left = append(left, id)
+	}
+	rows.Close()
+	if len(left) != 1 || left[0] != bad {
+		t.Fatalf("requests left = %v, want only the failing %s", left, bad)
+	}
+	if n, err := store.CancelAlbumRequests(ctx, rel); err != nil || n != 1 {
+		t.Fatalf("cancelled %d, %v", n, err)
+	}
+	if pending, err := store.Pending(ctx, 100); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after cancel = %v, %v", pending, err)
+	}
+}
+
+// If the release can't be loaded when a track is saved, the track is still
+// saved, but left for the backfill, which files it properly once TIDAL
+// serves the release again.
+func TestUnresolvedReleaseIsRetriedByBackfill(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	run := uuid.NewString()[:8]
+	tid, rel := "ur"+run, "urel"+run
+	optedInPlaylist(t, pool, tid)
+	root := t.TempDir()
+	t.Cleanup(func() { pool.Exec(context.Background(), `DELETE FROM tracks WHERE file_path LIKE $1`, root+"%") })
+	src := &fakeSource{
+		albums: map[string]tidal.Album{}, // FullAlbum fails
+		tracks: map[string]tidal.Track{tid: {ID: tid, Title: "Song " + run, Artists: []string{"Rapper"}, AlbumID: rel, AlbumTitle: "Tape " + run}},
+	}
+	w := testWorker(t, pool, root, src)
+	w.drain(ctx)
+
+	local, err := w.Library.DownloadedTIDALTrack(ctx, tid)
+	if err != nil {
+		t.Fatalf("not saved without its release: %v", err)
+	}
+	marker := func() string {
+		t.Helper()
+		var m string
+		if err := pool.QueryRow(ctx, `SELECT tidal_album_id FROM tidal_downloads WHERE tidal_id = $1`, tid).Scan(&m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if m := marker(); m != "" {
+		t.Fatalf("marker = %q, want it left unresolved", m)
+	}
+
+	src.albums[rel] = tidal.Album{ID: rel, Title: "Tape " + run, Artist: "Rapper", ReleaseYear: 2019, TrackCount: 1,
+		Tracks: []tidal.Track{{ID: tid, Title: "Song " + run, TrackNo: 1}}}
+	w.drain(ctx)
+
+	var artist string
+	var year int
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE(ar.name, ''), COALESCE(a.release_year, 0)
+		FROM tracks t JOIN albums a ON a.id = t.album_id LEFT JOIN artists ar ON ar.id = a.album_artist_id
+		WHERE t.id = $1`, local).Scan(&artist, &year); err != nil {
+		t.Fatal(err)
+	}
+	if artist != "Rapper" || year != 2019 || marker() != rel {
+		t.Fatalf("after recovery: artist %q, year %d, marker %q", artist, year, marker())
+	}
+}
+
+// If filing a saved track under its release fails, the album marker stays
+// unresolved and the backfill files it once the failure clears.
+func TestFailedFilingIsRetriedByBackfill(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	run := uuid.NewString()[:8]
+	tid, rel := "ff"+run, "frel"+run
+	title := "Boom " + run
+	// Linking any album titled `title` to its release fails, for now.
+	for _, sql := range []string{
+		`CREATE OR REPLACE FUNCTION tidaldl_test_boom() RETURNS trigger LANGUAGE plpgsql AS $$
+		 BEGIN RAISE EXCEPTION 'filing refused'; END $$`,
+		`CREATE TRIGGER tidaldl_test_boom BEFORE UPDATE OF tidal_album_id ON albums
+		 FOR EACH ROW WHEN (NEW.title = '` + title + `') EXECUTE FUNCTION tidaldl_test_boom()`,
+	} {
+		if _, err := pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dropTrigger := func() {
+		pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS tidaldl_test_boom ON albums`)
+	}
+	t.Cleanup(dropTrigger)
+
+	optedInPlaylist(t, pool, tid)
+	root := t.TempDir()
+	t.Cleanup(func() { pool.Exec(context.Background(), `DELETE FROM tracks WHERE file_path LIKE $1`, root+"%") })
+	w := testWorker(t, pool, root, &fakeSource{
+		albums: map[string]tidal.Album{rel: {ID: rel, Title: title, Artist: "Band", ReleaseYear: 2022, TrackCount: 1,
+			Tracks: []tidal.Track{{ID: tid, Title: "Song", TrackNo: 1}}}},
+		tracks: map[string]tidal.Track{tid: {ID: tid, Title: "Song", AlbumID: rel, AlbumTitle: title}},
+	})
+	w.drain(ctx)
+	if _, err := w.Library.DownloadedTIDALTrack(ctx, tid); err != nil {
+		t.Fatalf("not saved: %v", err)
+	}
+	marker := func() string {
+		t.Helper()
+		var m string
+		if err := pool.QueryRow(ctx, `SELECT tidal_album_id FROM tidal_downloads WHERE tidal_id = $1`, tid).Scan(&m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if m := marker(); m != "" {
+		t.Fatalf("marker = %q after a failed filing, want it left for the backfill", m)
+	}
+
+	dropTrigger()
+	w.drain(ctx)
+	if m := marker(); m != rel {
+		t.Fatalf("marker = %q after the backfill, want %q", m, rel)
 	}
 }
