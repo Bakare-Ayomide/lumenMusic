@@ -1,4 +1,4 @@
-import { app, ipcMain, session, dialog, shell } from "electron";
+import { app, ipcMain, net, session, dialog, shell } from "electron";
 import * as path from "node:path";
 import * as fsp from "node:fs/promises";
 import type { OpenDialogOptions } from "electron";
@@ -33,7 +33,42 @@ import type { WindowManager } from "./windows";
 import { downloadToFile, exportDownloadUrl, uniqueExportPath } from "./track-export";
 import { postJson } from "./fh6-bridge";
 
-import type { SetupDoneOpts, ExportTrackFileItem } from "../src/contracts/desktop";
+import type { DesktopConfig, ExportTrackFileItem } from "../src/contracts/desktop";
+
+async function readDesktopConfig(): Promise<DesktopConfig> {
+  const cfg = await loadConfig();
+  return {
+    backendUrl: cfg.backendUrl ?? "",
+    // `discordEnabled` defaults to true so existing installs keep the
+    // integration on without a migration step.
+    discordEnabled: cfg.discordEnabled ?? true,
+    alwaysOnTop: cfg.alwaysOnTop ?? false,
+    fh6RadioEnabled: cfg.fh6RadioEnabled === true,
+    fh6GameDir: cfg.fh6GameDir ?? "",
+    fh6BridgePort: cfg.fh6BridgePort ?? DEFAULT_FH6_BRIDGE_PORT,
+  };
+}
+
+/** Accept a server origin only, e.g. https://music.example.com. */
+function normalizeBackendUrl(
+  raw: unknown,
+): { ok: true; url: string } | { ok: false; error: string } {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (!text) return { ok: false, error: "Server URL is required" };
+  let parsed: URL;
+  try {
+    parsed = new URL(text);
+  } catch (e) {
+    return { ok: false, error: `Invalid URL: ${(e as Error).message}` };
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { ok: false, error: "URL must start with http:// or https://" };
+  }
+  if (parsed.pathname !== "/" || parsed.search || parsed.hash || parsed.username || parsed.password) {
+    return { ok: false, error: "Use the server origin only (for example https://music.example.com). Paths, query strings, fragments, and embedded credentials are not supported." };
+  }
+  return { ok: true, url: parsed.origin };
+}
 
 export function registerIpcHandlers(deps: {
   windows: WindowManager;
@@ -44,19 +79,7 @@ export function registerIpcHandlers(deps: {
 }): void {
   const { windows, localProxy, updateManager } = deps;
 
-  ipcMain.handle("config:get", async () => {
-    const cfg = await loadConfig();
-    return {
-      backendUrl: cfg.backendUrl ?? "",
-      // `discordEnabled` defaults to true so existing installs keep the
-      // integration on without a migration step.
-      discordEnabled: cfg.discordEnabled ?? true,
-      alwaysOnTop: cfg.alwaysOnTop ?? false,
-      fh6RadioEnabled: cfg.fh6RadioEnabled === true,
-      fh6GameDir: cfg.fh6GameDir ?? "",
-      fh6BridgePort: cfg.fh6BridgePort ?? DEFAULT_FH6_BRIDGE_PORT,
-    };
-  });
+  ipcMain.handle("config:get", () => readDesktopConfig());
 
   ipcMain.handle("tweaks:get", async () => {
     const cfg = await loadConfig();
@@ -117,32 +140,24 @@ export function registerIpcHandlers(deps: {
     }
   });
 
-  ipcMain.handle("config:save", async (_e, patch: SavePatch) => {
-    const raw = typeof patch?.backendUrl === "string" ? patch.backendUrl.trim() : "";
-    if (!raw) return { ok: false, error: "Server URL is required" };
-    let parsed: URL;
-    try {
-      parsed = new URL(raw);
-    } catch (e) {
-      return { ok: false, error: `Invalid URL: ${(e as Error).message}` };
+  // Validate a patch, persist it and apply its live side effects. Every field
+  // is optional, so Settings can flip one toggle at a time.
+  async function applyConfigPatch(
+    patch: SavePatch | undefined,
+  ): Promise<{ ok: false; error: string } | { ok: true; changed: boolean }> {
+    const writePatch: SavePatch = {};
+    let normalized: string | null = null;
+    if (patch?.backendUrl !== undefined) {
+      const result = normalizeBackendUrl(patch.backendUrl);
+      if (!result.ok) return result;
+      normalized = result.url;
+      writePatch.backendUrl = normalized;
     }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return { ok: false, error: "URL must start with http:// or https://" };
-    }
-    if (parsed.pathname !== "/" || parsed.search || parsed.hash || parsed.username || parsed.password) {
-      return { ok: false, error: "Use the server origin only (for example https://music.example.com). Paths, query strings, fragments, and embedded credentials are not supported." };
-    }
-    const normalized = parsed.origin;
-    const prev = deps.getBackendUrl();
-    const writePatch: SavePatch = { backendUrl: normalized };
     if (typeof patch?.discordEnabled === "boolean") {
       writePatch.discordEnabled = patch.discordEnabled;
-      configureDiscordPresence({ enabled: patch.discordEnabled });
     }
     if (typeof patch?.alwaysOnTop === "boolean") {
       writePatch.alwaysOnTop = patch.alwaysOnTop;
-      windows.alwaysOnTop = patch.alwaysOnTop;
-      windows.mainWindow?.setAlwaysOnTop(windows.alwaysOnTop);
     }
     if (typeof patch?.fh6RadioEnabled === "boolean") {
       writePatch.fh6RadioEnabled = patch.fh6RadioEnabled;
@@ -154,36 +169,74 @@ export function registerIpcHandlers(deps: {
       writePatch.fh6BridgePort = Math.max(1, Math.min(65535, Math.floor(patch.fh6BridgePort)));
     }
     await saveConfigPatch(writePatch);
+    if (writePatch.discordEnabled !== undefined) {
+      configureDiscordPresence({ enabled: writePatch.discordEnabled });
+    }
+    if (writePatch.alwaysOnTop !== undefined) {
+      windows.alwaysOnTop = writePatch.alwaysOnTop;
+      windows.mainWindow?.setAlwaysOnTop(windows.alwaysOnTop);
+    }
+    const prev = deps.getBackendUrl();
+    if (normalized === null) return { ok: true, changed: false };
     deps.setBackendUrl(normalized);
     configureDiscordPresence({ backendUrl: normalized });
-    return { ok: true, changed: prev !== "" && prev !== normalized };
-  });
+    return { ok: true, changed: prev !== normalized };
+  }
 
-  ipcMain.handle("setup:done", async (_e, opts: SetupDoneOpts | undefined) => {
-    const clear = !!opts?.clearSession;
-    const hadMain = !!windows.mainWindow;
-    if (windows.setupWindow) windows.setupWindow.close();
-    if (clear) {
+  ipcMain.handle("config:update", async (_e, patch: SavePatch) => {
+    const result = await applyConfigPatch(patch);
+    if (!result.ok) return result;
+    if (result.changed) {
+      // A different server: its session cookies mean nothing there. Reply
+      // first, then restart the app on the new server's sign-in page.
       try {
         await session.defaultSession.clearStorageData({ storages: ["cookies"] });
       } catch {
         // Non-fatal: stale cookies will simply be rejected by the new backend.
       }
+      setTimeout(() => windows.mainWindow?.webContents.reload(), 0);
     }
-    if (!hadMain) await windows.openMain();
-    else windows.mainWindow?.webContents.reload();
-    return { ok: true };
+    return { ...result, config: await readDesktopConfig() };
   });
 
-  ipcMain.handle("setup:cancel", async () => {
-    if (windows.setupWindow) windows.setupWindow.close();
-    if (!windows.mainWindow && !deps.getBackendUrl()) app.quit();
-    return { ok: true };
-  });
-
-  ipcMain.handle("settings:open", () => {
-    windows.openSetup();
-    return { ok: true };
+  // First-run and change-server check: is there a Lumen server at this
+  // address? Forgiving about what's typed (no scheme, a pasted page URL), and
+  // answers with the origin to save, after any redirect (say, to https).
+  ipcMain.handle("config:test-server", async (_e, raw: unknown) => {
+    const text = typeof raw === "string" ? raw.trim() : "";
+    if (!text) return { ok: false, error: "Enter your server's address." };
+    let target: URL;
+    try {
+      target = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(text) ? text : `https://${text}`);
+    } catch {
+      return { ok: false, error: "That doesn't look like a web address." };
+    }
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      return { ok: false, error: "The address must start with http:// or https://." };
+    }
+    if (target.username || target.password) {
+      return { ok: false, error: "Leave the username and password out of the address." };
+    }
+    let response: Response;
+    try {
+      response = await net.fetch(`${target.origin}/api/health`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(8000),
+      });
+    } catch (error) {
+      const timedOut = (error as Error).name === "TimeoutError";
+      return {
+        ok: false,
+        error: timedOut
+          ? `${target.host} didn't answer in time.`
+          : `Couldn't reach ${target.host}. Check the address and that the server is running.`,
+      };
+    }
+    const body = response.ok ? await response.json().catch(() => null) : null;
+    if ((body as { ok?: unknown } | null)?.ok !== true) {
+      return { ok: false, error: `${target.host} answered, but it isn't a Lumen server.` };
+    }
+    return { ok: true, url: new URL(response.url || target.href).origin };
   });
 
   ipcMain.handle("external:open", async (_e, rawUrl: unknown) => {
