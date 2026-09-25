@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "../api";
+import { readCache, writeCache } from "./resourceCache";
 
 export interface ApiResource<T> {
   data: T | null;
@@ -11,17 +12,28 @@ export interface ApiResource<T> {
    * never rejects. Await it to keep controls busy until fresh data arrives.
    */
   reload: () => Promise<void>;
+  /**
+   * Apply a change the caller already knows happened (a delete), so it shows
+   * before any refetch. Also updates the cached copy.
+   */
+  update: (fn: (data: T | null) => T | null) => void;
 }
 
 /**
  * Load a resource on mount or explicit reload, cancelling superseded requests.
  * Fetchers are read through refs so inline callbacks do not trigger refetches.
+ *
+ * With a `cacheKey`, a remount starts from the last result for that key and
+ * refetches behind it (`loading` is still true meanwhile). The key is read
+ * once per mount; a page showing a different resource should remount.
  */
 export function useApiResource<T>(
   fetcher: (signal: AbortSignal) => Promise<T>,
   fallbackMessage = "Something went wrong.",
+  { cacheKey }: { cacheKey?: string } = {},
 ): ApiResource<T> {
-  const [data, setData] = useState<T | null>(null);
+  const [data, setData] = useState<T | null>(() => readCache<T>(cacheKey) ?? null);
+  const cacheKeyRef = useRef(cacheKey);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [nonce, setNonce] = useState(0);
@@ -58,9 +70,14 @@ export function useApiResource<T>(
     [],
   );
 
+  // Bumped by update(): a read that started before it is older than the
+  // change it applied, so its result is dropped (it still settles).
+  const updatesRef = useRef(0);
+
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
+    const updatesAtStart = updatesRef.current;
     // Mount and explicit reload begin a new request lifecycle.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
@@ -69,13 +86,18 @@ export function useApiResource<T>(
       .current(controller.signal)
       .then((result) => {
         if (!active) return;
-        setData(result);
+        if (updatesRef.current === updatesAtStart) {
+          writeCache(cacheKeyRef.current, result);
+          setData(result);
+        }
         setLoading(false);
         settle(nonce);
       })
       .catch((err) => {
         if (!active || controller.signal.aborted) return;
-        setError(errorMessage(err, fallbackRef.current));
+        if (updatesRef.current === updatesAtStart) {
+          setError(errorMessage(err, fallbackRef.current));
+        }
         setLoading(false);
         settle(nonce);
       });
@@ -85,5 +107,14 @@ export function useApiResource<T>(
     };
   }, [nonce, settle]);
 
-  return { data, error, loading, reload };
+  const update = useCallback((fn: (data: T | null) => T | null) => {
+    updatesRef.current += 1;
+    setData((prev) => {
+      const next = fn(prev);
+      writeCache(cacheKeyRef.current, next ?? undefined);
+      return next;
+    });
+  }, []);
+
+  return { data, error, loading, reload, update };
 }

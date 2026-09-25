@@ -24,8 +24,11 @@ export default function GridView<T>({
   unit,
   emptyLabel,
   renderCard,
+  cacheKey,
 }: {
   fetcher: (params: PageRequest) => Promise<Page<T>>;
+  /** Shows the last first page at once on a revisit (see usePaginatedList). */
+  cacheKey?: string;
   query: string;
   pageSize: number;
   unit: string;
@@ -35,12 +38,12 @@ export default function GridView<T>({
   const { items, total, loadingMore, error, sentinelRef } = usePaginatedList(
     fetcher,
     query,
-    { pageSize, pollIntervalMs: POLL_INTERVAL_MS },
+    { pageSize, pollIntervalMs: POLL_INTERVAL_MS, cacheKey },
   );
 
   return (
     <>
-      <ListMeta loaded={items?.length ?? 0} total={total} unit={unit} />
+      <ListMeta loaded={items?.length ?? null} total={total} unit={unit} />
       {error && <ErrorBanner message={error} />}
       <div style={{ marginTop: 14 }}>
         {items === null && <LoadingState label="Loading library…" />}

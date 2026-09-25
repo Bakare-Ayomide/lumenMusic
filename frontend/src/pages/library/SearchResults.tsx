@@ -25,29 +25,38 @@ export default function SearchResults({
   onOpenAlbum: (id: string) => void;
   onOpenArtist: (id: string, name?: string) => void;
 }) {
-  const [warning, setWarning] = useState<string | null>(null);
+  // Tagged with the search it came from: results stay mounted across
+  // queries, and an old warning mustn't read as the new search's.
+  const [taggedWarning, setWarning] = useState<{ search: string; text: string | null }>({
+    search: "",
+    text: null,
+  });
   const fetcher = useCallback(
     async (params: PageRequest): Promise<Page<SearchResult>> => {
       if (!params.q) return { items: [], total: 0, nextOffsets: {} };
       const result = await api.searchPage({ ...params, type });
+      const search = `${type}\u0000${params.q}`;
       if (!params.signal.aborted)
-        setWarning(
-          (previous) =>
+        setWarning((previous) => ({
+          search,
+          text:
             [
               ...new Set(
                 [
-                  params.offset === 0 ? null : previous,
+                  params.offset === 0 || previous.search !== search ? null : previous.text,
                   ...(result.warnings ?? []),
                 ].filter(Boolean),
               ),
             ].join(" ") || null,
-        );
+        }));
       return result;
     },
     [type],
   );
-  const { items, total, hasMore, loadingMore, error, sentinelRef, reload } =
-    usePaginatedList(fetcher, query, { pageSize: 25, resourceKey: type });
+  const warning =
+    taggedWarning.search === `${type}\u0000${query.trim()}` ? taggedWarning.text : null;
+  const { items, total, hasMore, loadingMore, error, stale, sentinelRef, reload } =
+    usePaginatedList(fetcher, query, { pageSize: 25, resourceKey: type, keepPrevious: true });
   const tracks =
     items?.flatMap((result) =>
       result.type === "track" ? [result.item] : [],
@@ -60,8 +69,17 @@ export default function SearchResults({
     items?.flatMap((result) =>
       result.type === "artist" ? [result.item] : [],
     ) ?? [];
+  // The debounced query is still blank for a beat after the first keystroke,
+  // and a stale empty page (a type with no hits) says nothing about the next
+  // query, so both show as loading rather than "No matching results".
+  const searching =
+    items === null || !query.trim() || (stale && items.length === 0);
   return (
-    <div style={{ display: "grid", gap: 18, marginTop: 18 }}>
+    <div
+      className="refreshable"
+      aria-busy={(stale && !searching) || undefined}
+      style={{ display: "grid", gap: 18, marginTop: 18 }}
+    >
       {error && <ErrorBanner message={error} />}
       {warning && <ErrorBanner message={warning} />}
       {(error || warning) && (
@@ -69,8 +87,8 @@ export default function SearchResults({
           <Button onClick={() => void reload()}>Retry search</Button>
         </div>
       )}
-      {items === null && <LoadingState label="Searching…" />}
-      {items?.length === 0 && !error && !warning && (
+      {searching && <LoadingState label="Searching…" />}
+      {!searching && items.length === 0 && !error && !warning && (
         <EmptyState
           title="No matching results."
           hint="Try another search or type."

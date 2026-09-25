@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage, type Page, type SearchOffsets } from "../api";
 import { libraryChanged } from "./events";
+import { readCache, writeCache } from "./resourceCache";
 
 interface Options {
   resourceKey?: string;
@@ -10,6 +11,22 @@ interface Options {
   rootMargin?: string;
   /** Poll the server every N ms. Off when undefined or 0. */
   pollIntervalMs?: number;
+  /**
+   * Keep the current items up when the query or resource key changes, until
+   * the new first page lands (`stale` is true meanwhile), instead of dropping
+   * back to the loading state.
+   */
+  keepPrevious?: boolean;
+  /**
+   * Remember the first page under this key (per query and resource key), so
+   * a remount shows it at once and refreshes behind it.
+   */
+  cacheKey?: string;
+}
+
+interface CachedPage<T> {
+  items: T[];
+  total: number | null;
 }
 
 export interface PageRequest {
@@ -37,9 +54,18 @@ export function usePaginatedList<T>(
 ) {
   const pageSize = opts.pageSize ?? 100;
   const rootMargin = opts.rootMargin ?? "600px 0px";
+  const keepPrevious = opts.keepPrevious ?? false;
 
-  const [items, setItems] = useState<T[] | null>(null);
-  const [total, setTotal] = useState<number | null>(null);
+  // Which query + resource the items on screen came from, for `stale`.
+  const requestKey = `${opts.resourceKey ?? ""}\u0000${query}`;
+  const pageCacheKey =
+    opts.cacheKey === undefined ? undefined : `${opts.cacheKey}\u0000${requestKey}`;
+  const [items, setItems] = useState<T[] | null>(
+    () => readCache<CachedPage<T>>(pageCacheKey)?.items ?? null,
+  );
+  const [total, setTotal] = useState<number | null>(
+    () => readCache<CachedPage<T>>(pageCacheKey)?.total ?? null,
+  );
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,13 +75,25 @@ export function usePaginatedList<T>(
   const loadingRef = useRef(false);
   const activeRequestRef = useRef<AbortController | null>(null);
   const fetcherRef = useRef(fetcher);
+  const requestKeyRef = useRef(requestKey);
+  const pageCacheKeyRef = useRef(pageCacheKey);
+  // For the failure path, which runs after the render that last set items.
+  const itemsRef = useRef(items);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+  const [loadedKey, setLoadedKey] = useState<string | null>(() =>
+    readCache(pageCacheKey) === undefined ? null : requestKey,
+  );
   // Keep the ref current from an effect: writing refs during render is illegal
   // under concurrent React (a render that is thrown away still mutates it) and
   // is rejected by the React Compiler. Declared before the loader effects so
   // it commits first.
   useEffect(() => {
     fetcherRef.current = fetcher;
-  }, [fetcher]);
+    requestKeyRef.current = requestKey;
+    pageCacheKeyRef.current = pageCacheKey;
+  }, [fetcher, requestKey, pageCacheKey]);
 
   const loadPage = useCallback(
     async (offset: number, reset: boolean) => {
@@ -71,6 +109,8 @@ export function usePaginatedList<T>(
       }
       loadingRef.current = true;
       const token = tokenRef.current;
+      const key = requestKeyRef.current;
+      const cacheKey = pageCacheKeyRef.current;
       const controller = new AbortController();
       activeRequestRef.current = controller;
       try {
@@ -87,15 +127,24 @@ export function usePaginatedList<T>(
           ? Object.keys(page.nextOffsets).length > 0
           : offset + page.items.length < page.total;
         setHasMore(more);
-        setTotal(page.nextOffsets !== undefined && more ? null : page.total);
+        const nextTotal = page.nextOffsets !== undefined && more ? null : page.total;
+        setTotal(nextTotal);
+        if (reset) writeCache(cacheKey, { items: page.items, total: nextTotal } satisfies CachedPage<T>);
         setItems((prev) =>
           reset || !prev ? page.items : [...prev, ...page.items],
         );
+        setLoadedKey(key);
         setError(null);
       } catch (err) {
         if (controller.signal.aborted || token !== tokenRef.current) return;
         setError(errorMessage(err, "Failed to load."));
-        if (reset) setItems([]);
+        // Rows already on screen (cached, or kept from the previous query)
+        // stay up under the error, still marked stale if they belong to
+        // another query. Only a load with nothing to show settles on empty.
+        if (reset && !itemsRef.current?.length) {
+          setItems([]);
+          setLoadedKey(key);
+        }
       } finally {
         if (activeRequestRef.current === controller) {
           activeRequestRef.current = null;
@@ -109,12 +158,22 @@ export function usePaginatedList<T>(
 
   // Initial + query-change reload.
   useEffect(() => {
-    // Query inputs define a new paginated resource and reset accumulated pages.
+    // Query inputs define a new paginated resource and reset accumulated pages
+    // (to its cached first page, if there is one).
+    // An error belongs to the request that failed, not the new one.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setItems(null);
-    setTotal(null);
+    setError(null);
+    const cached = readCache<CachedPage<T>>(pageCacheKeyRef.current);
+    if (cached) {
+      setItems(cached.items);
+      setTotal(cached.total);
+      setLoadedKey(requestKeyRef.current);
+    } else if (!keepPrevious) {
+      setItems(null);
+      setTotal(null);
+    }
     void loadPage(0, true);
-  }, [loadPage, opts.resourceKey]);
+  }, [loadPage, opts.resourceKey, keepPrevious]);
 
   useEffect(
     () => () => {
@@ -156,5 +215,6 @@ export function usePaginatedList<T>(
     return () => obs.disconnect();
   }, [loadPage, items, hasMore, rootMargin]);
 
-  return { items, total, hasMore, loadingMore, error, sentinelRef, reload: () => loadPage(0, true) };
+  const stale = items !== null && loadedKey !== requestKey;
+  return { items, total, hasMore, loadingMore, error, stale, sentinelRef, reload: () => loadPage(0, true) };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import {
   RefreshCw as ArrowPathIcon,
   RotateCcw as RetryIcon,
@@ -28,23 +28,23 @@ export function TidalAutoDownloadCard({ roots }: { roots: MusicRoot[] | null }) 
     error: loadError,
     loading,
     reload,
+    update,
   } = useApiResource<TidalAutoDownloadStatus>(
     () => api.tidalAutoDownload(),
     "Failed to load TIDAL auto-download status.",
+    { cacheKey: "admin:tidal-auto-download" },
   );
-  const [rootId, setRootId] = useState("");
-  const [subdir, setSubdir] = useState("");
+  // Unsaved edits over the server's values, rather than a copy of them: a
+  // background refresh (the cached status, then the fresh one) can't discard
+  // what the user has typed.
+  const [edits, setEdits] = useState<{ rootId?: string; subdir?: string }>({});
+  const rootId = edits.rootId ?? status?.root_id ?? "";
+  const subdir = edits.subdir ?? status?.subdir ?? "";
+  const setRootId = (value: string) => setEdits((e) => ({ ...e, rootId: value }));
+  const setSubdir = (value: string) => setEdits((e) => ({ ...e, subdir: value }));
   const [busy, setBusy] = useState<"save" | "retry" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const error = actionError ?? loadError;
-
-  // Seed the form from the server once it loads, and again after a save.
-  useEffect(() => {
-    if (!status) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setRootId(status.root_id ?? "");
-    setSubdir(status.subdir);
-  }, [status]);
 
   const rootOptions = useMemo(
     () =>
@@ -65,10 +65,14 @@ export function TidalAutoDownloadCard({ roots }: { roots: MusicRoot[] | null }) 
     setBusy("save");
     setActionError(null);
     try {
-      await api.saveTidalAutoDownloadSettings({
+      // The response is what the server stored (it normalises the path), so
+      // it becomes the status and the edits give way to it.
+      const saved = await api.saveTidalAutoDownloadSettings({
         root_id: rootId || undefined,
         subdir: subdir.trim(),
       });
+      update(() => saved);
+      setEdits({});
       await reload();
     } catch (err) {
       setActionError(errorMessage(err, "Could not save the download folder."));

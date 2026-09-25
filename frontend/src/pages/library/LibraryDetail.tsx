@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import {
   api,
+  ApiError,
   albumCoverUrl,
   errorMessage,
   type Album,
@@ -15,6 +16,7 @@ import {
 } from "../../api";
 import { displayText, pluralize } from "../../lib/format";
 import { useEntityDetail } from "../../lib/useEntityDetail";
+import { dropCache, readCache, writeCache } from "../../lib/resourceCache";
 import TrackList from "../../components/TrackList";
 import CoverArt from "../../components/CoverArt";
 import { Button } from "../../components/Button";
@@ -22,7 +24,6 @@ import { EditAlbumDialog } from "../../components/edit/EditAlbumDialog";
 import EmptyState from "../../components/EmptyState";
 import ErrorBanner from "../../components/ErrorBanner";
 import ListPageHeader from "../../components/ListPageHeader";
-import LoadingState from "../../components/LoadingState";
 import SearchInput from "../../components/SearchInput";
 import { usePlayer } from "../../context/Player";
 import { useAuth } from "../../context/Auth";
@@ -37,7 +38,7 @@ export function AlbumDetailView({
   id: string;
   onBack: () => void;
 }) {
-  const { entity, tracks, error, refresh } = useEntityDetail<Album>(id, {
+  const { entity, tracks, error, refresh, replace } = useEntityDetail<Album>(id, {
     get: api.getAlbum,
     listTracks: api.listAlbumTracks,
     label: "album",
@@ -47,28 +48,20 @@ export function AlbumDetailView({
   // Bumped whenever the album is saved so the cover <img> reloads — the cover
   // URL is stable even when an admin replaces the artwork.
   const [coverNonce, setCoverNonce] = useState(0);
-  // Local override so an in-place save reflects immediately without refetching.
-  const [saved, setSaved] = useState<Album | null>(null);
   const { play } = usePlayer();
   const { me } = useAuth();
   const isAdmin = me?.role === "admin";
   const search = useDetailTrackSearch("album", tracks);
-  const onDownloadChanged = useCallback(() => {
-    setSaved(null); // the refetch carries fresh counts
-    refresh();
-  }, [refresh]);
+  // The refetch carries fresh counts.
+  const onDownloadChanged = useCallback(() => refresh(), [refresh]);
 
   if (entity === "notfound") {
     return <NotFound kind="Album" onBack={onBack} />;
   }
   if (!entity || !tracks) {
-    return (
-      <div className="view">
-        <LoadingState label="Loading library…" />
-      </div>
-    );
+    return <DetailLoading kind="Album" label="Loading album…" error={error} onBack={onBack} />;
   }
-  const album = saved ?? entity;
+  const album = entity;
   const playable = playableTracks(tracks);
   return (
     <div className="view" style={{ display: "grid", gap: 18 }}>
@@ -174,7 +167,8 @@ export function AlbumDetailView({
         album={album}
         onClose={() => setEditing(false)}
         onSaved={(a) => {
-          setSaved(a);
+          // In place and in the cache, so a revisit doesn't show the old one.
+          replace(a);
           setCoverNonce(Date.now());
         }}
       />
@@ -191,42 +185,64 @@ export function TidalAlbumDetailView({
   onBack: () => void;
   onOpenAlbum: (id: string) => void;
 }) {
-  const [album, setAlbum] = useState<TidalAlbum | null>(null);
+  const [album, setAlbum] = useState<TidalAlbum | null>(
+    () => readCache<TidalAlbum>(`tidal-album:${id}`) ?? null,
+  );
   const [error, setError] = useState<string | null>(null);
+  // Kept apart from the load error: a later successful read clears that one,
+  // but it says nothing about a download or cancel that failed.
+  const [actionError, setActionError] = useState<string | null>(null);
   const { play } = usePlayer();
   const { me } = useAuth();
   const isAdmin = me?.role === "admin";
+  // Only the newest read may commit: a revisit's mount read is still out
+  // while the (cached) page's download controls are usable, and it mustn't
+  // land on top of the reload that follows a download or cancel.
+  const readGenRef = useRef(0);
   // Quiet refetch for download progress; failures keep the current view.
   const reload = useCallback(() => {
-    api.getTidalAlbum(id).then(setAlbum).catch(() => {});
+    const gen = ++readGenRef.current;
+    api
+      .getTidalAlbum(id)
+      .then((next) => {
+        if (gen !== readGenRef.current) return;
+        writeCache(`tidal-album:${id}`, next);
+        setAlbum(next);
+        setError(null);
+      })
+      .catch(() => {});
   }, [id]);
   const search = useDetailTrackSearch("album", album?.tracks ?? null);
 
   useEffect(() => {
     const ac = new AbortController();
-    // A changed TIDAL album id invalidates the previous remote snapshot.
+    // A changed TIDAL album id invalidates the previous remote snapshot; a
+    // revisit starts from its own last load.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setAlbum(null);
+    setAlbum(readCache<TidalAlbum>(`tidal-album:${id}`) ?? null);
     setError(null);
+    const gen = ++readGenRef.current;
     api
       .getTidalAlbum(id, { signal: ac.signal })
       .then((next) => {
-        if (!ac.signal.aborted) setAlbum(next);
+        if (ac.signal.aborted || gen !== readGenRef.current) return;
+        writeCache(`tidal-album:${id}`, next);
+        setAlbum(next);
       })
       .catch((err) => {
-        if (!ac.signal.aborted) {
-          setError(errorMessage(err, "Failed to load TIDAL album."));
+        if (ac.signal.aborted || gen !== readGenRef.current) return;
+        // Gone from TIDAL: don't keep showing (or caching) the old copy.
+        if (err instanceof ApiError && err.status === 404) {
+          dropCache(`tidal-album:${id}`);
+          setAlbum(null);
         }
+        setError(errorMessage(err, "Failed to load TIDAL album."));
       });
     return () => ac.abort();
   }, [id]);
 
   if (!album && !error) {
-    return (
-      <div className="view">
-        <LoadingState label="Loading TIDAL album..." />
-      </div>
-    );
+    return <DetailLoading kind="TIDAL Album" label="Loading TIDAL album…" onBack={onBack} />;
   }
 
   return (
@@ -289,7 +305,7 @@ export function TidalAlbumDetailView({
                     tracks={album.tracks}
                     queuedCount={album.queued_count ?? 0}
                     onChanged={reload}
-                    onError={setError}
+                    onError={setActionError}
                   />
                 )}
                 {album.library_album_id && (
@@ -314,7 +330,7 @@ export function TidalAlbumDetailView({
               />
             }
           />
-          {error && <ErrorBanner message={error} />}
+          {(error || actionError) && <ErrorBanner message={(error || actionError)!} />}
           <TrackList
             tracks={search.filteredTracks}
             queueSource={album.tracks}
@@ -435,6 +451,43 @@ export function DetailTrackSearchBar({
  * Renders inside `.detail-header` as the top strip, over the same card
  * gradient as the cover/body below it.
  */
+/**
+ * The detail page's frame while its first load is out: the Back row and a
+ * header of the same shape, so neither pops in with the album.
+ */
+function DetailLoading({
+  kind,
+  label,
+  error,
+  onBack,
+}: {
+  kind: string;
+  label: string;
+  /** A failed first load: shown instead of the header, with the way back. */
+  error?: string | null;
+  onBack: () => void;
+}) {
+  if (error) {
+    return (
+      <div className="view" style={{ display: "grid", gap: 18 }}>
+        <DetailBackRow onBack={onBack} />
+        <ErrorBanner message={error} />
+      </div>
+    );
+  }
+  return (
+    <div className="view" style={{ display: "grid", gap: 18 }} aria-busy="true">
+      <DetailBackRow onBack={onBack} />
+      <ListPageHeader
+        kind={kind}
+        title={<span className="skeleton-text" style={{ width: "min(320px, 60%)" }} />}
+        art={<div className="detail-art" aria-hidden="true" />}
+        meta={<span role="status">{label}</span>}
+      />
+    </div>
+  );
+}
+
 function DetailBackRow({ onBack }: { onBack: () => void }) {
   return (
     <div>

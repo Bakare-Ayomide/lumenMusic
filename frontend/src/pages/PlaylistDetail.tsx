@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import {
   api,
+  ApiError,
   errorMessage,
   toQueueItem,
   type Collaborator,
@@ -32,6 +33,8 @@ import ListPageHeader from "../components/ListPageHeader";
 import ErrorBanner from "../components/ErrorBanner";
 import LoadingState from "../components/LoadingState";
 import { useFavorites } from "../context/Favorites";
+import { usePlaylists } from "../context/Playlists";
+import { dropCache, readCache, writeCache } from "../lib/resourceCache";
 import { useKey } from "../lib/keybindings";
 import { fmtTotalMs } from "../lib/format";
 import CollaboratorsPanel from "./playlist/CollaboratorsPanel";
@@ -52,6 +55,15 @@ const PLAYLIST_SELECTION_CONTROLS_ID = "playlist-track-selection-controls";
 // library copies without a manual reload.
 const AUTO_DOWNLOAD_REFRESH_MS = 20_000;
 
+interface CachedPlaylist {
+  playlist: Playlist;
+  tracks: PlaylistTrackEntry[];
+  collabs: Collaborator[];
+}
+const cacheKey = (id: string | undefined) => (id ? `playlist:${id}` : undefined);
+const showsCollaborators = (p: Playlist) =>
+  p.effective_role === "owner" || p.visibility === "collaborative";
+
 export default function PlaylistDetail() {
   const { id } = useParams<{ id: string }>();
   // Keyed on the route id so switching playlists remounts with fresh state
@@ -67,9 +79,25 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
   const { me } = useAuth();
   const isAdmin = me?.role === "admin";
 
-  const [playlist, setPlaylist] = useState<Playlist | null>(null);
-  const [tracks, setTracks] = useState<PlaylistTrackEntry[] | null>(null);
-  const [collabs, setCollabs] = useState<Collaborator[]>([]);
+  // A revisit starts from what this page showed last time; a first visit
+  // starts from the sidebar's row, so the header is up while tracks load.
+  const [cached] = useState(() => readCache<CachedPlaylist>(cacheKey(id)));
+  const {
+    data: playlistRows,
+    reload: reloadPlaylists,
+    update: updatePlaylists,
+  } = usePlaylists();
+  // Deleted, or access lost: nothing cached or listed stands in for it.
+  const [gone, setGone] = useState(false);
+  const listed = gone ? null : (playlistRows?.find((p) => p.id === id) ?? null);
+  const [loadedPlaylist, setPlaylist] = useState<Playlist | null>(cached?.playlist ?? null);
+  const playlist = loadedPlaylist ?? listed;
+  const listedRef = useRef(listed);
+  useEffect(() => {
+    listedRef.current = listed;
+  }, [listed]);
+  const [tracks, setTracks] = useState<PlaylistTrackEntry[] | null>(cached?.tracks ?? null);
+  const [collabs, setCollabs] = useState<Collaborator[]>(cached?.collabs ?? []);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("tracks");
   const [showAddDialog, setShowAddDialog] = useState(false);
@@ -96,29 +124,66 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
     },
   );
 
+  // Only the newest load may commit. The page is usable while its first
+  // load is out (seeded from the cache or sidebar), so a mutation and its
+  // reload can overtake it, and its older rows mustn't land on top.
+  const loadGenRef = useRef(0);
+  const invalidateLoads = () => {
+    loadGenRef.current += 1;
+  };
   const load = useCallback(async () => {
     if (!id) return;
+    const gen = ++loadGenRef.current;
     try {
-      const [p, t] = await Promise.all([
+      // Fetch collaborators alongside when the row we already have says the
+      // tab exists, so its count lands with everything else.
+      const known = listedRef.current;
+      const [p, t, early] = await Promise.all([
         api.getPlaylist(id),
         api.listPlaylistTracks(id),
+        known && showsCollaborators(known)
+          ? api.listCollaborators(id).catch(() => undefined)
+          : null,
       ]);
+      // undefined: that request failed, so keep what's shown (a cached
+      // list) rather than committing an empty one over it.
+      const c = showsCollaborators(p)
+        ? early !== null
+          ? early
+          : await api.listCollaborators(id).catch(() => undefined)
+        : [];
+      if (gen !== loadGenRef.current) return;
       setPlaylist(p);
       setTracks(t.tracks);
-      if (p.effective_role === "owner" || p.visibility === "collaborative") {
-        const c = await api.listCollaborators(id).catch(() => []);
-        setCollabs(c);
-      }
+      if (c) setCollabs(c);
+      setError(null);
     } catch (err) {
+      if (gen !== loadGenRef.current) return;
+      if (err instanceof ApiError && err.status === 404) {
+        dropCache(cacheKey(id));
+        setGone(true);
+        setPlaylist(null);
+        setTracks(null);
+        // Take it out of the sidebar too.
+        void reloadPlaylists();
+        setError("This playlist was deleted, or you no longer have access to it.");
+        return;
+      }
       setError(errorMessage(err, "Failed to load playlist."));
     }
-  }, [id]);
+  }, [id, reloadPlaylists]);
 
   useEffect(() => {
     // The route id selects an external playlist resource to load.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (loadedPlaylist && tracks) {
+      writeCache(cacheKey(id), { playlist: loadedPlaylist, tracks, collabs } satisfies CachedPlaylist);
+    }
+  }, [id, loadedPlaylist, tracks, collabs]);
 
   const autoDownload = Boolean(playlist?.tidal_auto_download);
   const queuedTidal = useMemo(
@@ -130,9 +195,12 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
     const timer = window.setInterval(() => {
       // Quiet refresh: a transient failure must not replace the page with
       // the load error banner.
+      const gen = loadGenRef.current;
       api
         .listPlaylistTracks(id)
-        .then((t) => setTracks(t.tracks))
+        .then((t) => {
+          if (gen === loadGenRef.current) setTracks(t.tracks);
+        })
         .catch(() => {});
     }, AUTO_DOWNLOAD_REFRESH_MS);
     return () => window.clearInterval(timer);
@@ -172,7 +240,9 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
     [sortedTracks, q],
   );
 
-  if (error) {
+  // With nothing to show, the error is the page; otherwise (a cached or
+  // listed playlist, a failed refresh or action) it sits under the header.
+  if (error && (gone || !playlist)) {
     return (
       <div className="view">
         <ErrorBanner message={error} />
@@ -180,8 +250,12 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
     );
   }
 
-  if (!playlist || tracks === null) {
-    return <LoadingState />;
+  if (!playlist) {
+    return (
+      <div className="view">
+        <LoadingState />
+      </div>
+    );
   }
 
   const role = playlist.effective_role ?? "";
@@ -192,13 +266,22 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
     if (queue.length > 0) play(queue[0], queue);
   };
 
+  // After a failed action, reload anyway (the action may have superseded a
+  // pending load), then report the action's error, which a successful reload
+  // would otherwise clear.
+  const failAction = async (err: unknown, fallback: string) => {
+    await load();
+    setError(errorMessage(err, fallback));
+  };
+
   const onRemove = async (position: number) => {
     if (!id) return;
+    invalidateLoads();
     try {
       await api.removePlaylistTrack(id, position);
       await load();
     } catch (err) {
-      setError(errorMessage(err, "Failed to remove track."));
+      await failAction(err, "Failed to remove track.");
     }
   };
   // Drag-reorder commits the full visible order, like mobile's reorder mode.
@@ -209,6 +292,7 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
     const next = [...tracks];
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
+    invalidateLoads();
     setTracks(next);
     try {
       await api.reorderPlaylist(
@@ -218,7 +302,7 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
       await load();
     } catch (err) {
       setTracks(previous);
-      setError(errorMessage(err, "Failed to reorder tracks."));
+      await failAction(err, "Failed to reorder tracks.");
     }
   };
 
@@ -229,12 +313,15 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
   const onToggleAutoDownload = async () => {
     if (!id || savingAutoDownload) return;
     const next = !autoDownload;
+    invalidateLoads();
     setSavingAutoDownload(true);
     try {
       await api.setPlaylistTidalAutoDownload(id, next);
       setPlaylist((p) => (p ? { ...p, tidal_auto_download: next } : p));
+      // The load this may have superseded still has to happen.
+      void load();
     } catch (err) {
-      setError(errorMessage(err, "Failed to update TIDAL auto-download."));
+      await failAction(err, "Failed to update TIDAL auto-download.");
     } finally {
       setSavingAutoDownload(false);
     }
@@ -248,6 +335,11 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
       return;
     try {
       await api.deletePlaylist(id);
+      // Gone from the sidebar, the Playlists page and the cache before we
+      // land there, rather than whenever a refetch succeeds.
+      invalidateLoads();
+      dropCache(cacheKey(id));
+      updatePlaylists((rows) => rows?.filter((p) => p.id !== id) ?? rows);
       navigate("/playlists", { replace: true });
     } catch (err) {
       setError(errorMessage(err, "Failed to delete."));
@@ -293,18 +385,24 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
         title={playlist.name}
         description={playlist.description || undefined}
         heroTrack={firstCoverTrack}
+        // Plain art until the tracks say whether there's a cover, rather
+        // than a note that gets swapped for one.
         fallbackIcon={
-          <MusicalNoteIcon
-            className="size-12"
-            style={{ color: "var(--muted-foreground)" }}
-          />
+          tracks && (
+            <MusicalNoteIcon
+              className="size-12"
+              style={{ color: "var(--muted-foreground)" }}
+            />
+          )
         }
         meta={
           <>
             <span>
-              {tracks.length} {tracks.length === 1 ? "track" : "tracks"}
+              {tracks === null
+                ? "—"
+                : `${tracks.length} ${tracks.length === 1 ? "track" : "tracks"}`}
             </span>
-            {tracks.length > 0 && (
+            {tracks && tracks.length > 0 && (
               <>
                 <span className="dot" />
                 <span>
@@ -325,13 +423,16 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
             <Button
               variant="primary"
               onClick={onPlayAll}
-              disabled={tracks.length === 0}
+              disabled={!tracks || tracks.length === 0}
               leadingIcon={<PlayIcon className="size-4" />}
             >
               Play all
             </Button>
             {canEdit && (
               <Button
+                // The dialog marks tracks already in the playlist; until they
+                // load it would offer them again as duplicates.
+                disabled={tracks === null}
                 onClick={() => setShowAddDialog(true)}
                 leadingIcon={<PlusIcon className="size-4" />}
               >
@@ -376,6 +477,8 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
         }
       />
 
+      {error && <ErrorBanner message={error} />}
+
       <div className="playlist-toolbar">
         <SegmentedControl
           value={tab}
@@ -405,7 +508,7 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
           ]}
         />
         <div className="playlist-toolbar-spacer" />
-        {tab === "tracks" && tracks.length > 1 && (
+        {tab === "tracks" && tracks && tracks.length > 1 && (
           <div className="playlist-sort-controls">
             <div
               id={PLAYLIST_SELECTION_CONTROLS_ID}
@@ -452,7 +555,9 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
         />
       </div>
 
-      {tab === "tracks" && (
+      {/* Collaborators land with the tracks, so both tabs wait on them. */}
+      {tracks === null && !error && <LoadingState />}
+      {tab === "tracks" && tracks && (
         <PlaylistTracksPanel
           tracks={filteredTracks}
           totalCount={tracks.length}
@@ -475,7 +580,7 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
         />
       )}
 
-      {tab === "collaborators" && (
+      {tab === "collaborators" && tracks !== null && (
         <CollaboratorsPanel
           playlistId={id!}
           collaborators={collabs}
@@ -489,7 +594,7 @@ function PlaylistDetailView({ id }: { id: string | undefined }) {
         <AddTracksDialog
           open={showAddDialog}
           playlistId={id}
-          existingIds={new Set(tracks.map((t) => t.track_id))}
+          existingIds={new Set((tracks ?? []).map((t) => t.track_id))}
           onClose={() => setShowAddDialog(false)}
           onAdded={async () => {
             setShowAddDialog(false);
