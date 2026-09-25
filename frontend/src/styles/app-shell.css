@@ -8,7 +8,13 @@
   grid-template-columns: var(--sidebar-w, 248px) 8px minmax(0, 1fr) var(--lyrics-panel-gap, 0px) var(--lyrics-panel-w, 0px);
   grid-template-rows: 1fr auto;
   grid-template-areas: "sidebar . main . lyrics" "player player player player player";
-  height: 100vh;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: 100%;
+  min-height: 100dvh;
+  box-sizing: border-box;
+  flex: 1 1 auto;
   row-gap: 8px;
   padding: 8px;
   background: var(--sidebar);

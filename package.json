@@ -1,0 +1,30 @@
+{
+  "name": "lumen-music-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "npm run build --workspace=frontend",
+    "start": "NODE_ENV=production tsx server.ts",
+    "lint": "tsc --noEmit --project frontend/tsconfig.json"
+  },
+  "workspaces": [
+    "core",
+    "frontend"
+  ],
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.8",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.5.4",
+    "vite": "^8.1.5"
+  }
+}

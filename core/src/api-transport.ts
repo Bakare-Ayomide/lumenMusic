@@ -138,9 +138,14 @@ export async function fetchPage<T>(
     `${path}${buildQuery({ limit: params.limit, offset: params.offset, q: params.q, sort: params.sort })}`,
     { signal: params.signal },
   );
-  const items = ((await response.json()) ?? []) as T[];
+  const data = (await response.json()) ?? [];
+  const items = (Array.isArray(data) ? data : (data.items ?? [])) as T[];
   const totalHeader = response.headers.get("X-Total-Count");
-  const total = totalHeader ? parseInt(totalHeader, 10) : items.length;
+  const total = totalHeader
+    ? parseInt(totalHeader, 10)
+    : (typeof (data as { total?: unknown })?.total === "number"
+      ? ((data as { total: number }).total)
+      : items.length);
   return { items, total: Number.isFinite(total) ? total : items.length };
 }
 

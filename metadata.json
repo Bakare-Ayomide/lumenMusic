@@ -1,0 +1,8 @@
+{
+  "name": "Lumen Music",
+  "description": "A modern, elegant music library and player for streaming your audio collection, albums, artists, and playlists.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

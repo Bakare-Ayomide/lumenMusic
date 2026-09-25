@@ -35,8 +35,12 @@ export default function Home() {
   );
   const favorites = useFavorites();
   const playlistResource = usePlaylists();
-  const recent = recentResource.data ?? EMPTY_TRACKS;
-  const tracks = tracksResource.data ?? EMPTY_TRACKS;
+  const recent = Array.isArray(recentResource.data)
+    ? recentResource.data
+    : ((recentResource.data as unknown as { items?: TrackListItem[] })?.items ?? EMPTY_TRACKS);
+  const tracks = Array.isArray(tracksResource.data)
+    ? tracksResource.data
+    : ((tracksResource.data as unknown as { items?: TrackListItem[] })?.items ?? EMPTY_TRACKS);
   const favs = favorites.tracks.filter((track) => favorites.ids.has(track.id));
   const playlists = playlistResource.data ?? [];
   const { bind: bindCtx, menu: ctxMenu } = useTrackContextMenu();
